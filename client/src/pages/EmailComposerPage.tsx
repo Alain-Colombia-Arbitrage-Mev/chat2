@@ -1,127 +1,253 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import {
+  DndContext,
+  DragOverlay,
+  KeyboardSensor,
+  PointerSensor,
+  closestCenter,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+  type DragStartEvent,
+} from "@dnd-kit/core";
+import { arrayMove, sortableKeyboardCoordinates } from "@dnd-kit/sortable";
 import { AppLayout } from "@/components/layout/AppLayout";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Textarea } from "@/components/ui/textarea";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useToast } from "@/hooks/use-toast";
+import { LivePreview, renderDocToHtml } from "@/lib/email/LivePreview";
+import { BlockPalette, PaletteDragOverlay } from "@/lib/email/BlockPalette";
+import { BlockCanvas } from "@/lib/email/BlockCanvas";
+import { BlockProperties } from "@/lib/email/BlockProperties";
 import {
-  Brush,
-  Heading as HeadingIcon,
+  type Block,
+  type BlockType,
+  type EmailDoc,
+  defaultDoc,
+  makeBlock,
+  TOKENS,
+} from "@/lib/email/blocks";
+import {
   Mail,
+  MousePointerClick,
   RotateCcw,
   Save,
-  Sparkles,
   Tag,
-  TextCursor,
   TriangleAlert,
 } from "lucide-react";
 
 const API = import.meta.env.VITE_API_URL ?? "";
-
-// ── Types mirror lib/email_template_config.ts ───────────────────────────────
-type TemplateConfig = {
-  brand: {
-    companyName: string;
-    logoUrl?: string;
-    primaryColor: string;
-    accentColor: string;
-    successColor: string;
-  };
-  header: { tagline: string; title: string; greeting: string };
-  hero: { label: string; savingsCopy: string };
-  body: { beforeLabel: string; afterLabel: string; rationaleLabel: string };
-  cta: { label: string; url: string };
-  footer: { supportEmail: string; footerCopy: string };
-  updatedAt?: string;
-};
-
-const EMPTY: TemplateConfig = {
-  brand: { companyName: "", primaryColor: "#0F1B2D", accentColor: "#F8B03B", successColor: "#16A34A" },
-  header: { tagline: "", title: "", greeting: "" },
-  hero: { label: "", savingsCopy: "" },
-  body: { beforeLabel: "", afterLabel: "", rationaleLabel: "" },
-  cta: { label: "", url: "" },
-  footer: { supportEmail: "", footerCopy: "" },
-};
-
-const TOKENS = [
-  { key: "client_name", help: "Nombre del cliente" },
-  { key: "company_name", help: "Nombre empresa" },
-  { key: "discount_percent", help: "Descuento aplicado (sin %)" },
-  { key: "discount_amount", help: "Ahorro mensual con moneda" },
-  { key: "new_price", help: "Factura nueva con moneda" },
-  { key: "current_price", help: "Factura actual con moneda" },
-  { key: "consumption_kwh", help: "Consumo kWh/mes" },
-  { key: "customer_type", help: "doméstico / pyme / industrial" },
-  { key: "city", help: "Ciudad del cliente" },
-  { key: "rule_id", help: "Regla aplicada" },
-  { key: "quote_id", help: "Referencia interna" },
-];
+const LOCAL_KEY = "ancestro:email-composer:doc-v1";
 
 export default function EmailComposerPage() {
   const { toast } = useToast();
-  const [config, setConfig] = useState<TemplateConfig>(EMPTY);
+  const [doc, setDoc] = useState<EmailDoc>(() => defaultDoc());
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [dirty, setDirty] = useState(false);
-  const [activeField, setActiveField] = useState<{ block: keyof TemplateConfig; field: string } | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [draggingPaletteType, setDraggingPaletteType] = useState<BlockType | null>(null);
 
+  // Load: try backend, fall back to localStorage, fall back to default doc.
   useEffect(() => {
     (async () => {
       try {
         const r = await fetch(`${API}/api/email-editor/template-config`, { credentials: "include" });
-        if (!r.ok) throw new Error(`load ${r.status}`);
-        const d = (await r.json()) as { config: TemplateConfig };
-        setConfig(d.config);
-      } catch (e) {
-        toast({
-          title: "No pude cargar la plantilla",
-          description: (e as Error).message,
-          variant: "destructive",
-        });
-      } finally {
-        setLoading(false);
+        if (r.ok) {
+          const d = (await r.json()) as { config?: unknown; blocks?: Block[]; brand?: EmailDoc["brand"] };
+          if (Array.isArray(d.blocks) && d.brand) {
+            setDoc({ schema: "blocks-v1", brand: d.brand, blocks: d.blocks });
+            setLoading(false);
+            return;
+          }
+        }
+      } catch {
+        /* fall through to localStorage */
       }
+      const cached = localStorage.getItem(LOCAL_KEY);
+      if (cached) {
+        try {
+          const parsed = JSON.parse(cached) as EmailDoc;
+          if (parsed.schema === "blocks-v1") {
+            setDoc(parsed);
+          }
+        } catch {
+          /* ignore */
+        }
+      }
+      setLoading(false);
     })();
-  }, [toast]);
+  }, []);
 
-  const patch = useCallback(<B extends keyof TemplateConfig>(block: B, field: string, value: string) => {
-    setConfig((prev) => ({
-      ...prev,
-      [block]: { ...(prev[block] as object), [field]: value } as TemplateConfig[B],
+  const selectedBlock = useMemo(
+    () => doc.blocks.find((b) => b.id === selectedId) ?? null,
+    [doc.blocks, selectedId],
+  );
+
+  // ── Mutations ──────────────────────────────────────────────────────────────
+
+  const updateBlock = useCallback((id: string, patch: Partial<Block>) => {
+    setDoc((d) => ({
+      ...d,
+      blocks: d.blocks.map((b) =>
+        b.id === id
+          ? // Cast is safe — caller passes a partial of the same block type.
+            ({ ...b, ...patch } as Block)
+          : b,
+      ),
     }));
+    setDirty(true);
+  }, []);
+
+  // Called from the iframe (click-to-edit inline). The data-edit-path is
+  // "<block-id>:<field>" where field may be a nested path like "left.value".
+  const onInlineEdit = useCallback((blockId: string, field: string, value: string) => {
+    setDoc((d) => ({
+      ...d,
+      blocks: d.blocks.map((b) => {
+        if (b.id !== blockId) return b;
+        const segs = field.split(".");
+        if (segs.length === 1) {
+          return { ...b, [segs[0]]: value } as Block;
+        }
+        // Two-level (columns.left.label etc.).
+        const [outer, inner] = segs as [string, string];
+        const outerVal = (b as unknown as Record<string, Record<string, unknown>>)[outer];
+        return {
+          ...b,
+          [outer]: { ...outerVal, [inner]: value },
+        } as Block;
+      }),
+    }));
+    setDirty(true);
+  }, []);
+
+  const deleteBlock = useCallback(
+    (id: string) => {
+      setDoc((d) => ({ ...d, blocks: d.blocks.filter((b) => b.id !== id) }));
+      if (selectedId === id) setSelectedId(null);
+      setDirty(true);
+    },
+    [selectedId],
+  );
+
+  const updateBrand = useCallback((patch: Partial<EmailDoc["brand"]>) => {
+    setDoc((d) => ({ ...d, brand: { ...d.brand, ...patch } }));
     setDirty(true);
   }, []);
 
   const insertToken = useCallback(
     (token: string) => {
-      if (!activeField) {
-        toast({ title: "Selecciona un campo primero", description: "Haz click en un input para insertar la variable." });
+      if (!selectedBlock) {
+        toast({
+          title: "Selecciona un bloque",
+          description: "Click sobre un bloque del preview o del canvas y luego inserta la variable.",
+        });
         return;
       }
-      const current = (config[activeField.block] as Record<string, string>)[activeField.field] ?? "";
-      patch(activeField.block, activeField.field, `${current}{{${token}}}`);
+      // For text-style blocks, append to `.text`. For button → `.label`. For others, no-op with hint.
+      const t = `{{${token}}}`;
+      if (selectedBlock.type === "heading" || selectedBlock.type === "text") {
+        updateBlock(selectedBlock.id, { text: selectedBlock.text + t } as Partial<Block>);
+      } else if (selectedBlock.type === "button") {
+        updateBlock(selectedBlock.id, { label: selectedBlock.label + t } as Partial<Block>);
+      } else if (selectedBlock.type === "hero") {
+        updateBlock(selectedBlock.id, { caption: selectedBlock.caption + t } as Partial<Block>);
+      } else {
+        toast({
+          title: "Bloque sin texto",
+          description: "Este bloque no acepta variables. Selecciona un Heading, Texto, Botón o Hero.",
+        });
+      }
     },
-    [activeField, config, patch, toast],
+    [selectedBlock, updateBlock, toast],
   );
+
+  // ── DnD ────────────────────────────────────────────────────────────────────
+
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
+  );
+
+  const onDragStart = (e: DragStartEvent) => {
+    const src = e.active.data.current?.source;
+    if (src === "palette") {
+      setDraggingPaletteType(e.active.data.current?.blockType as BlockType);
+    }
+  };
+
+  const onDragEnd = (e: DragEndEvent) => {
+    setDraggingPaletteType(null);
+    const { active, over } = e;
+    if (!over) return;
+    const srcKind = active.data.current?.source as "palette" | "canvas" | undefined;
+
+    if (srcKind === "palette") {
+      const type = active.data.current?.blockType as BlockType;
+      const newBlock = makeBlock(type);
+      setDoc((d) => {
+        const overId = String(over.id);
+        const idx = d.blocks.findIndex((b) => b.id === overId);
+        const insertAt = idx < 0 ? d.blocks.length : idx + 1;
+        const next = [...d.blocks];
+        next.splice(insertAt, 0, newBlock);
+        return { ...d, blocks: next };
+      });
+      setSelectedId(newBlock.id);
+      setDirty(true);
+      return;
+    }
+
+    if (srcKind === "canvas") {
+      const fromId = String(active.id);
+      const toId = String(over.id);
+      if (fromId === toId) return;
+      setDoc((d) => {
+        const from = d.blocks.findIndex((b) => b.id === fromId);
+        const to = d.blocks.findIndex((b) => b.id === toId);
+        if (from < 0 || to < 0) return d;
+        return { ...d, blocks: arrayMove(d.blocks, from, to) };
+      });
+      setDirty(true);
+    }
+  };
+
+  // ── Persistence ────────────────────────────────────────────────────────────
 
   const onSave = async () => {
     setSaving(true);
     try {
-      const r = await fetch(`${API}/api/email-editor/template-config`, {
-        method: "PUT",
-        credentials: "include",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(config),
+      const html = await renderDocToHtml(doc);
+      const body = JSON.stringify({
+        schema: doc.schema,
+        brand: doc.brand,
+        blocks: doc.blocks,
+        html,
       });
-      if (!r.ok) throw new Error(`save ${r.status}`);
-      const d = (await r.json()) as { config: TemplateConfig };
-      setConfig(d.config);
+      let backendOk = false;
+      try {
+        const r = await fetch(`${API}/api/email-editor/template-config`, {
+          method: "PUT",
+          credentials: "include",
+          headers: { "Content-Type": "application/json" },
+          body,
+        });
+        backendOk = r.ok;
+      } catch {
+        backendOk = false;
+      }
+      // Always cache locally so work isn't lost while the backend catches up to blocks-v1.
+      localStorage.setItem(LOCAL_KEY, JSON.stringify(doc));
       setDirty(false);
-      toast({ title: "Plantilla guardada", description: "Los próximos envíos usan esta versión." });
+      toast({
+        title: backendOk ? "Plantilla guardada" : "Guardado local",
+        description: backendOk
+          ? "Los próximos envíos usan esta versión."
+          : "El backend aún no acepta blocks-v1. Guardado en este navegador.",
+      });
     } catch (e) {
       toast({ title: "Error guardando", description: (e as Error).message, variant: "destructive" });
     } finally {
@@ -129,27 +255,12 @@ export default function EmailComposerPage() {
     }
   };
 
-  const onReset = async () => {
-    if (!confirm("¿Restablecer la plantilla a sus valores por defecto?")) return;
-    setSaving(true);
-    try {
-      const r = await fetch(`${API}/api/email-editor/template-config`, {
-        method: "DELETE",
-        credentials: "include",
-      });
-      if (!r.ok) throw new Error(`reset ${r.status}`);
-      const d = (await r.json()) as { config: TemplateConfig };
-      setConfig(d.config);
-      setDirty(false);
-      toast({ title: "Plantilla restablecida" });
-    } catch (e) {
-      toast({ title: "Error", description: (e as Error).message, variant: "destructive" });
-    } finally {
-      setSaving(false);
-    }
+  const onReset = () => {
+    if (!confirm("¿Restablecer la plantilla a su estado inicial?")) return;
+    setDoc(defaultDoc());
+    setSelectedId(null);
+    setDirty(true);
   };
-
-  const previewSrcDoc = useLivePreview(config);
 
   if (loading) {
     return (
@@ -161,253 +272,176 @@ export default function EmailComposerPage() {
 
   return (
     <AppLayout>
-      <div className="p-6 max-w-[1600px] mx-auto">
-        <div className="flex items-start gap-3 mb-6">
-          <div className="flex-1">
-            <h1 className="text-2xl font-semibold tracking-tight flex items-center gap-2">
-              <Mail className="h-6 w-6" /> Email Composer
-            </h1>
-            <p className="text-sm text-muted-foreground">
-              Edita la plantilla React Email del cotizador. Live preview a la derecha. Inserta variables como{" "}
-              <code className="bg-muted px-1 rounded text-xs">{"{{client_name}}"}</code> en cualquier texto.
-            </p>
-            {dirty && (
-              <p className="text-xs text-amber-600 mt-1 flex items-center gap-1">
-                <TriangleAlert className="h-3 w-3" /> Hay cambios sin guardar
+      <DndContext sensors={sensors} collisionDetection={closestCenter} onDragStart={onDragStart} onDragEnd={onDragEnd}>
+        <div className="p-6 max-w-[1700px] mx-auto">
+          <div className="flex items-start gap-3 mb-6">
+            <div className="flex-1">
+              <h1 className="text-2xl font-semibold tracking-tight flex items-center gap-2">
+                <Mail className="h-6 w-6" /> Email Composer
+              </h1>
+              <p className="text-sm text-muted-foreground flex items-center gap-1.5">
+                <MousePointerClick className="h-3.5 w-3.5" />
+                Arrastra bloques desde la paleta al canvas. Click en un bloque para editar sus propiedades.
               </p>
-            )}
-          </div>
-          <Button variant="outline" onClick={onReset} disabled={saving}>
-            <RotateCcw className="h-4 w-4 mr-2" /> Reset
-          </Button>
-          <Button onClick={onSave} disabled={saving || !dirty}>
-            <Save className="h-4 w-4 mr-2" /> {saving ? "Guardando…" : "Guardar"}
-          </Button>
-        </div>
-
-        <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_640px] gap-6">
-          <div>
-            <Tabs defaultValue="brand">
-              <TabsList className="grid grid-cols-5 mb-4">
-                <TabsTrigger value="brand"><Brush className="h-4 w-4 mr-1.5" /> Brand</TabsTrigger>
-                <TabsTrigger value="header"><HeadingIcon className="h-4 w-4 mr-1.5" /> Header</TabsTrigger>
-                <TabsTrigger value="hero"><Sparkles className="h-4 w-4 mr-1.5" /> Hero</TabsTrigger>
-                <TabsTrigger value="body"><TextCursor className="h-4 w-4 mr-1.5" /> Body</TabsTrigger>
-                <TabsTrigger value="cta"><Tag className="h-4 w-4 mr-1.5" /> CTA & Footer</TabsTrigger>
-              </TabsList>
-
-              <TabsContent value="brand">
-                <Card>
-                  <CardHeader>
-                    <CardTitle className="text-base">Marca</CardTitle>
-                    <CardDescription>Colores del header y nombre de la empresa.</CardDescription>
-                  </CardHeader>
-                  <CardContent className="space-y-3">
-                    <Field label="Nombre empresa" value={config.brand.companyName} onChange={(v) => patch("brand", "companyName", v)} onFocus={() => setActiveField({ block: "brand", field: "companyName" })} />
-                    <Field label="Logo URL (opcional)" value={config.brand.logoUrl ?? ""} onChange={(v) => patch("brand", "logoUrl", v)} onFocus={() => setActiveField({ block: "brand", field: "logoUrl" })} placeholder="https://…/logo.png" />
-                    <div className="grid grid-cols-3 gap-3">
-                      <ColorField label="Primary (navy)" value={config.brand.primaryColor} onChange={(v) => patch("brand", "primaryColor", v)} />
-                      <ColorField label="Accent (amber)" value={config.brand.accentColor} onChange={(v) => patch("brand", "accentColor", v)} />
-                      <ColorField label="Success (green)" value={config.brand.successColor} onChange={(v) => patch("brand", "successColor", v)} />
-                    </div>
-                  </CardContent>
-                </Card>
-              </TabsContent>
-
-              <TabsContent value="header">
-                <Card>
-                  <CardHeader>
-                    <CardTitle className="text-base">Header</CardTitle>
-                    <CardDescription>Banda superior del email con el saludo.</CardDescription>
-                  </CardHeader>
-                  <CardContent className="space-y-3">
-                    <Field label="Tagline" value={config.header.tagline} onChange={(v) => patch("header", "tagline", v)} onFocus={() => setActiveField({ block: "header", field: "tagline" })} />
-                    <Field label="Título" value={config.header.title} onChange={(v) => patch("header", "title", v)} onFocus={() => setActiveField({ block: "header", field: "title" })} />
-                    <TextField label="Saludo" value={config.header.greeting} onChange={(v) => patch("header", "greeting", v)} onFocus={() => setActiveField({ block: "header", field: "greeting" })} rows={3} />
-                  </CardContent>
-                </Card>
-              </TabsContent>
-
-              <TabsContent value="hero">
-                <Card>
-                  <CardHeader>
-                    <CardTitle className="text-base">Hero (descuento grande)</CardTitle>
-                    <CardDescription>El bloque con el % grande y el copy de ahorro.</CardDescription>
-                  </CardHeader>
-                  <CardContent className="space-y-3">
-                    <Field label="Etiqueta sobre el %" value={config.hero.label} onChange={(v) => patch("hero", "label", v)} onFocus={() => setActiveField({ block: "hero", field: "label" })} />
-                    <Field label="Copy de ahorro" value={config.hero.savingsCopy} onChange={(v) => patch("hero", "savingsCopy", v)} onFocus={() => setActiveField({ block: "hero", field: "savingsCopy" })} />
-                  </CardContent>
-                </Card>
-              </TabsContent>
-
-              <TabsContent value="body">
-                <Card>
-                  <CardHeader>
-                    <CardTitle className="text-base">Body</CardTitle>
-                    <CardDescription>Etiquetas de la comparación antes/después y rationale.</CardDescription>
-                  </CardHeader>
-                  <CardContent className="space-y-3">
-                    <Field label="Etiqueta «Antes»" value={config.body.beforeLabel} onChange={(v) => patch("body", "beforeLabel", v)} onFocus={() => setActiveField({ block: "body", field: "beforeLabel" })} />
-                    <Field label="Etiqueta «Después»" value={config.body.afterLabel} onChange={(v) => patch("body", "afterLabel", v)} onFocus={() => setActiveField({ block: "body", field: "afterLabel" })} />
-                    <Field label="Etiqueta «Rationale»" value={config.body.rationaleLabel} onChange={(v) => patch("body", "rationaleLabel", v)} onFocus={() => setActiveField({ block: "body", field: "rationaleLabel" })} />
-                  </CardContent>
-                </Card>
-              </TabsContent>
-
-              <TabsContent value="cta">
-                <Card>
-                  <CardHeader>
-                    <CardTitle className="text-base">CTA y Footer</CardTitle>
-                    <CardDescription>Botón principal + copy y soporte del footer.</CardDescription>
-                  </CardHeader>
-                  <CardContent className="space-y-3">
-                    <Field label="Texto del botón" value={config.cta.label} onChange={(v) => patch("cta", "label", v)} onFocus={() => setActiveField({ block: "cta", field: "label" })} />
-                    <Field label="URL del botón" value={config.cta.url} onChange={(v) => patch("cta", "url", v)} onFocus={() => setActiveField({ block: "cta", field: "url" })} placeholder="https://…" />
-                    <Field label="Email de soporte" value={config.footer.supportEmail} onChange={(v) => patch("footer", "supportEmail", v)} onFocus={() => setActiveField({ block: "footer", field: "supportEmail" })} />
-                    <TextField label="Copy del footer" value={config.footer.footerCopy} onChange={(v) => patch("footer", "footerCopy", v)} onFocus={() => setActiveField({ block: "footer", field: "footerCopy" })} rows={2} />
-                  </CardContent>
-                </Card>
-              </TabsContent>
-            </Tabs>
-
-            <Card className="mt-4">
-              <CardHeader>
-                <CardTitle className="text-sm">Variables disponibles</CardTitle>
-                <CardDescription className="text-xs">Click para insertar en el campo activo.</CardDescription>
-              </CardHeader>
-              <CardContent>
-                <div className="flex flex-wrap gap-1.5">
-                  {TOKENS.map((t) => (
-                    <button
-                      key={t.key}
-                      type="button"
-                      onClick={() => insertToken(t.key)}
-                      className="text-xs px-2 py-1 rounded bg-muted hover:bg-accent transition-colors"
-                      title={t.help}
-                    >
-                      <code>{`{{${t.key}}}`}</code>
-                    </button>
-                  ))}
-                </div>
-              </CardContent>
-            </Card>
+              {dirty && (
+                <p className="text-xs text-amber-600 mt-1 flex items-center gap-1">
+                  <TriangleAlert className="h-3 w-3" /> Hay cambios sin guardar
+                </p>
+              )}
+            </div>
+            <Button variant="outline" onClick={onReset} disabled={saving}>
+              <RotateCcw className="h-4 w-4 mr-2" /> Reset
+            </Button>
+            <Button onClick={onSave} disabled={saving || !dirty}>
+              <Save className="h-4 w-4 mr-2" /> {saving ? "Guardando…" : "Guardar"}
+            </Button>
           </div>
 
-          <div>
+          <div className="grid grid-cols-1 xl:grid-cols-[220px_minmax(0,1fr)_360px] gap-4">
+            {/* Palette */}
+            <div className="space-y-4">
+              <Card>
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-sm">Bloques</CardTitle>
+                  <CardDescription className="text-xs">Arrastra al canvas.</CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <BlockPalette />
+                </CardContent>
+              </Card>
+
+              <Card>
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-sm">Estructura</CardTitle>
+                  <CardDescription className="text-xs">Reordena, selecciona o elimina.</CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <BlockCanvas
+                    blocks={doc.blocks}
+                    selectedId={selectedId}
+                    onSelect={setSelectedId}
+                    onDelete={deleteBlock}
+                  />
+                </CardContent>
+              </Card>
+            </div>
+
+            {/* Preview */}
             <Card>
               <CardHeader className="pb-2">
                 <div className="flex items-center justify-between">
-                  <CardTitle className="text-sm">Preview en vivo</CardTitle>
-                  <span className="text-xs text-muted-foreground">React Email</span>
+                  <CardTitle className="text-sm">Preview</CardTitle>
+                  <span className="text-xs text-muted-foreground">React Email · render local</span>
                 </div>
               </CardHeader>
-              <CardContent className="p-0">
-                <iframe
-                  srcDoc={previewSrcDoc}
-                  className="w-full h-[840px] border-0 bg-[#F1F5F9]"
-                  title="Email preview"
-                />
+              <CardContent className="p-3">
+                <LivePreview doc={doc} onEdit={onInlineEdit} onSelect={setSelectedId} height={920} />
               </CardContent>
             </Card>
+
+            {/* Properties */}
+            <div className="space-y-4">
+              <Card>
+                <CardHeader className="pb-3">
+                  <CardTitle className="text-sm">
+                    {selectedBlock ? `Propiedades · ${selectedBlock.type}` : "Selecciona un bloque"}
+                  </CardTitle>
+                  <CardDescription className="text-xs">
+                    {selectedBlock
+                      ? "Cambios se aplican al instante en el preview."
+                      : "Click sobre un bloque del canvas o del preview."}
+                  </CardDescription>
+                </CardHeader>
+                <CardContent>
+                  {selectedBlock ? (
+                    <BlockProperties
+                      block={selectedBlock}
+                      onChange={(patch) => updateBlock(selectedBlock.id, patch)}
+                    />
+                  ) : (
+                    <p className="text-xs text-muted-foreground italic">
+                      Sin selección.
+                    </p>
+                  )}
+                </CardContent>
+              </Card>
+
+              <Card>
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-sm flex items-center gap-1.5">
+                    <Tag className="h-3.5 w-3.5" /> Variables
+                  </CardTitle>
+                  <CardDescription className="text-xs">
+                    Click para insertar en el bloque de texto seleccionado.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <div className="flex flex-wrap gap-1.5">
+                    {TOKENS.map((t) => (
+                      <button
+                        key={t.key}
+                        type="button"
+                        onClick={() => insertToken(t.key)}
+                        className="text-xs px-2 py-1 rounded bg-muted hover:bg-accent transition-colors disabled:opacity-40"
+                        title={t.help}
+                        disabled={!selectedBlock}
+                      >
+                        <code>{`{{${t.key}}}`}</code>
+                      </button>
+                    ))}
+                  </div>
+                </CardContent>
+              </Card>
+
+              <Card>
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-sm">Marca global</CardTitle>
+                  <CardDescription className="text-xs">Aplica a toda la plantilla.</CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-3">
+                  <BrandField label="Nombre empresa" value={doc.brand.companyName} onChange={(v) => updateBrand({ companyName: v })} />
+                  <div className="grid grid-cols-2 gap-2">
+                    <BrandColor label="Primary" value={doc.brand.primaryColor} onChange={(v) => updateBrand({ primaryColor: v })} />
+                    <BrandColor label="Accent" value={doc.brand.accentColor} onChange={(v) => updateBrand({ accentColor: v })} />
+                    <BrandColor label="Success" value={doc.brand.successColor} onChange={(v) => updateBrand({ successColor: v })} />
+                    <BrandColor label="Body BG" value={doc.brand.bodyBg} onChange={(v) => updateBrand({ bodyBg: v })} />
+                  </div>
+                </CardContent>
+              </Card>
+            </div>
           </div>
         </div>
-      </div>
+
+        <DragOverlay>
+          {draggingPaletteType ? <PaletteDragOverlay type={draggingPaletteType} /> : null}
+        </DragOverlay>
+      </DndContext>
     </AppLayout>
   );
 }
 
-function Field(props: {
-  label: string;
-  value: string;
-  onChange: (v: string) => void;
-  onFocus?: () => void;
-  placeholder?: string;
-}) {
+function BrandField({ label, value, onChange }: { label: string; value: string; onChange: (v: string) => void }) {
   return (
     <div className="space-y-1">
-      <Label className="text-xs text-muted-foreground">{props.label}</Label>
-      <Input
-        value={props.value}
-        onChange={(e) => props.onChange(e.target.value)}
-        onFocus={props.onFocus}
-        placeholder={props.placeholder}
-      />
+      <Label className="text-xs text-muted-foreground">{label}</Label>
+      <Input value={value} onChange={(e) => onChange(e.target.value)} />
     </div>
   );
 }
 
-function TextField(props: {
-  label: string;
-  value: string;
-  onChange: (v: string) => void;
-  onFocus?: () => void;
-  rows?: number;
-}) {
+function BrandColor({ label, value, onChange }: { label: string; value: string; onChange: (v: string) => void }) {
   return (
     <div className="space-y-1">
-      <Label className="text-xs text-muted-foreground">{props.label}</Label>
-      <Textarea
-        value={props.value}
-        onChange={(e) => props.onChange(e.target.value)}
-        onFocus={props.onFocus}
-        rows={props.rows ?? 2}
-      />
-    </div>
-  );
-}
-
-function ColorField(props: { label: string; value: string; onChange: (v: string) => void }) {
-  return (
-    <div className="space-y-1">
-      <Label className="text-xs text-muted-foreground">{props.label}</Label>
-      <div className="flex items-center gap-2">
+      <Label className="text-xs text-muted-foreground">{label}</Label>
+      <div className="flex items-center gap-1">
         <input
           type="color"
-          value={props.value}
-          onChange={(e) => props.onChange(e.target.value)}
-          className="h-9 w-12 rounded border bg-background cursor-pointer"
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          className="h-9 w-9 rounded border bg-background cursor-pointer shrink-0"
         />
-        <Input value={props.value} onChange={(e) => props.onChange(e.target.value)} className="font-mono text-xs" />
+        <Input value={value} onChange={(e) => onChange(e.target.value)} className="font-mono text-xs h-9 px-1.5" />
       </div>
     </div>
   );
-}
-
-/** Debounced live preview — POSTs the current config and renders the returned HTML in an iframe via srcDoc. */
-function useLivePreview(config: TemplateConfig): string {
-  const [html, setHtml] = useState<string>(
-    "<html><body style='font-family:system-ui;padding:24px;color:#64748b'>Cargando preview…</body></html>",
-  );
-  // Stringify so the deep-equality check works cleanly.
-  const key = useMemo(() => JSON.stringify(config), [config]);
-  const debounceRef = useRef<number | null>(null);
-
-  useEffect(() => {
-    if (debounceRef.current) window.clearTimeout(debounceRef.current);
-    debounceRef.current = window.setTimeout(async () => {
-      try {
-        const res = await fetch(`${API}/api/email/template/preview`, {
-          method: "POST",
-          credentials: "include",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ config }),
-        });
-        if (!res.ok) throw new Error(`preview ${res.status}`);
-        setHtml(await res.text());
-      } catch (e) {
-        setHtml(
-          `<html><body style='font-family:system-ui;padding:24px;color:#dc2626'>Error al renderizar preview: ${
-            (e as Error).message
-          }</body></html>`,
-        );
-      }
-    }, 300);
-    return () => {
-      if (debounceRef.current) window.clearTimeout(debounceRef.current);
-    };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [key]);
-
-  return html;
 }
