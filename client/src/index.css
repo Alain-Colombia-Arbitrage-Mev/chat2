@@ -1,0 +1,318 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+
+  --color-background: hsl(var(--background));
+  --color-foreground: hsl(var(--foreground));
+
+  --color-card: hsl(var(--card));
+  --color-card-foreground: hsl(var(--card-foreground));
+
+  --color-popover: hsl(var(--popover));
+  --color-popover-foreground: hsl(var(--popover-foreground));
+
+  --color-primary: hsl(var(--primary));
+  --color-primary-foreground: hsl(var(--primary-foreground));
+
+  --color-secondary: hsl(var(--secondary));
+  --color-secondary-foreground: hsl(var(--secondary-foreground));
+
+  --color-muted: hsl(var(--muted));
+  --color-muted-foreground: hsl(var(--muted-foreground));
+
+  --color-accent: hsl(var(--accent));
+  --color-accent-foreground: hsl(var(--accent-foreground));
+
+  --color-destructive: hsl(var(--destructive));
+  --color-destructive-foreground: hsl(var(--destructive-foreground));
+
+  --color-border: hsl(var(--border));
+  --color-input: hsl(var(--input));
+  --color-ring: hsl(var(--ring));
+
+  --color-chart-1: hsl(var(--chart-1));
+  --color-chart-2: hsl(var(--chart-2));
+  --color-chart-3: hsl(var(--chart-3));
+  --color-chart-4: hsl(var(--chart-4));
+  --color-chart-5: hsl(var(--chart-5));
+
+  --color-sidebar: hsl(var(--sidebar));
+  --color-sidebar-foreground: hsl(var(--sidebar-foreground));
+  --color-sidebar-primary: hsl(var(--sidebar-primary));
+  --color-sidebar-primary-foreground: hsl(var(--sidebar-primary-foreground));
+  --color-sidebar-accent: hsl(var(--sidebar-accent));
+  --color-sidebar-accent-foreground: hsl(var(--sidebar-accent-foreground));
+  --color-sidebar-border: hsl(var(--sidebar-border));
+  --color-sidebar-ring: hsl(var(--sidebar-ring));
+
+  --font-sans: 'DM Sans', system-ui, sans-serif;
+  --font-display: 'Cormorant Garamond', 'Georgia', serif;
+  --font-brand: 'Outfit', sans-serif;
+}
+
+/* ═══════════════════════════════════════════
+   ANCESTRO SANCTUM THEME — Refined Dark Luxury
+   ═══════════════════════════════════════════ */
+:root, .dark {
+  /* Deep black with warmth */
+  --background: 30 5% 3%;
+  --foreground: 40 10% 92%;
+
+  /* Card surfaces — layered depth */
+  --card: 30 4% 6%;
+  --card-foreground: 40 10% 92%;
+
+  --popover: 30 4% 7%;
+  --popover-foreground: 40 10% 92%;
+
+  /* Refined Ancestral Gold */
+  --primary: 42 76% 55%;
+  --primary-foreground: 30 10% 5%;
+
+  --secondary: 30 4% 12%;
+  --secondary-foreground: 40 10% 85%;
+
+  --muted: 30 3% 10%;
+  --muted-foreground: 35 5% 50%;
+
+  --accent: 42 76% 55%;
+  --accent-foreground: 30 10% 5%;
+
+  --destructive: 0 72% 51%;
+  --destructive-foreground: 0 0% 98%;
+
+  /* Warm dark borders */
+  --border: 30 4% 14%;
+  --input: 30 4% 14%;
+  --ring: 42 76% 55%;
+
+  --radius: 0.625rem;
+
+  /* Sidebar tokens */
+  --sidebar: 30 5% 4%;
+  --sidebar-foreground: 40 10% 92%;
+  --sidebar-primary: 42 76% 55%;
+  --sidebar-primary-foreground: 30 10% 5%;
+  --sidebar-accent: 30 4% 10%;
+  --sidebar-accent-foreground: 40 10% 92%;
+  --sidebar-border: 30 4% 11%;
+  --sidebar-ring: 42 76% 55%;
+
+  /* Chart palette */
+  --chart-1: 42 76% 55%;
+  --chart-2: 35 20% 65%;
+  --chart-3: 30 10% 50%;
+  --chart-4: 25 5% 35%;
+  --chart-5: 20 3% 22%;
+}
+
+/* ═══════════════════════════════════════════
+   BASE LAYER
+   ═══════════════════════════════════════════ */
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply font-sans antialiased bg-background text-foreground;
+    font-feature-settings: 'cv02', 'cv03', 'cv04', 'cv11';
+    text-rendering: optimizeLegibility;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  /* Elegant serif headings */
+  h1, h2, h3 {
+    font-family: var(--font-display);
+    font-weight: 500;
+    letter-spacing: -0.01em;
+    line-height: 1.2;
+  }
+
+  h4, h5, h6 {
+    font-family: var(--font-sans);
+    font-weight: 600;
+    letter-spacing: -0.01em;
+  }
+
+  h1 { font-size: 2.25rem; font-weight: 400; letter-spacing: -0.02em; }
+  h2 { font-size: 1.75rem; font-weight: 500; }
+  h3 { font-size: 1.35rem; font-weight: 500; }
+}
+
+/* ═══════════════════════════════════════════
+   BACKGROUND GRAIN TEXTURE
+   ═══════════════════════════════════════════ */
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  opacity: 0.035;
+  pointer-events: none;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  background-repeat: repeat;
+  background-size: 200px 200px;
+}
+
+/* ═══════════════════════════════════════════
+   CARD ENHANCEMENTS
+   ═══════════════════════════════════════════ */
+[data-slot="card"] {
+  background: hsl(var(--card));
+  border: 1px solid hsl(var(--border));
+  transition: border-color 0.3s ease, box-shadow 0.3s ease;
+}
+
+[data-slot="card"]:hover {
+  border-color: hsl(42 76% 55% / 0.15);
+  box-shadow:
+    0 0 0 1px hsl(42 76% 55% / 0.05),
+    0 4px 24px -4px hsl(30 10% 0% / 0.5);
+}
+
+[data-slot="card-title"] {
+  font-family: var(--font-sans);
+  font-weight: 600;
+  font-size: 0.95rem;
+  letter-spacing: -0.01em;
+}
+
+/* ═══════════════════════════════════════════
+   SCROLLBAR STYLING
+   ═══════════════════════════════════════════ */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: hsl(30 4% 18%);
+  border-radius: 999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: hsl(42 76% 55% / 0.3);
+}
+
+/* ═══════════════════════════════════════════
+   INPUT & FORM REFINEMENTS
+   ═══════════════════════════════════════════ */
+input:not([type="color"]):not([type="range"]),
+textarea,
+[data-slot="select-trigger"] {
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+input:not([type="color"]):not([type="range"]):focus,
+textarea:focus {
+  border-color: hsl(42 76% 55% / 0.4) !important;
+  box-shadow: 0 0 0 2px hsl(42 76% 55% / 0.08) !important;
+}
+
+/* ═══════════════════════════════════════════
+   BUTTON POLISH
+   ═══════════════════════════════════════════ */
+button[data-slot="button"] {
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  font-weight: 500;
+}
+
+button[data-slot="button"]:active {
+  transform: scale(0.97);
+}
+
+/* ═══════════════════════════════════════════
+   TABLE REFINEMENTS
+   ═══════════════════════════════════════════ */
+[data-slot="table-row"] {
+  transition: background-color 0.15s ease;
+}
+
+/* ═══════════════════════════════════════════
+   TABS REFINEMENTS
+   ═══════════════════════════════════════════ */
+[data-slot="tabs-trigger"] {
+  transition: all 0.2s ease;
+  font-weight: 500;
+}
+
+[data-slot="tabs-trigger"][data-state="active"] {
+  color: hsl(42 76% 55%);
+}
+
+/* ═══════════════════════════════════════════
+   BADGE REFINEMENTS
+   ═══════════════════════════════════════════ */
+[data-slot="badge"] {
+  font-weight: 500;
+  letter-spacing: 0.02em;
+}
+
+/* ═══════════════════════════════════════════
+   SELECTION COLOR
+   ═══════════════════════════════════════════ */
+::selection {
+  background: hsl(42 76% 55% / 0.25);
+  color: hsl(40 10% 95%);
+}
+
+/* ═══════════════════════════════════════════
+   SMOOTH PAGE TRANSITIONS
+   ═══════════════════════════════════════════ */
+@keyframes page-enter {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.page-enter {
+  animation: page-enter 0.4s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+
+/* ═══════════════════════════════════════════
+   GOLDEN GLOW UTILITY
+   ═══════════════════════════════════════════ */
+.gold-glow {
+  box-shadow: 0 0 20px hsl(42 76% 55% / 0.1);
+}
+
+.gold-glow-strong {
+  box-shadow:
+    0 0 15px hsl(42 76% 55% / 0.15),
+    0 0 40px hsl(42 76% 55% / 0.05);
+}
+
+/* ═══════════════════════════════════════════
+   SEPARATOR WITH GRADIENT
+   ═══════════════════════════════════════════ */
+.separator-gold {
+  height: 1px;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    hsl(42 76% 55% / 0.3) 50%,
+    transparent 100%
+  );
+}
+
+/* ═══════════════════════════════════════════
+   FONT UTILITY CLASSES
+   ═══════════════════════════════════════════ */
+.font-brand {
+  font-family: var(--font-brand);
+}
