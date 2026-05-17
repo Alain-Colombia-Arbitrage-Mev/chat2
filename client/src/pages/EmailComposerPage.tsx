@@ -1,362 +1,413 @@
-import { useEffect, useMemo, useRef, useState, lazy, Suspense } from "react";
-import type { EditorRef, EmailEditorProps } from "react-email-editor";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AppLayout } from "@/components/layout/AppLayout";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useToast } from "@/hooks/use-toast";
 import {
-  Mail, Save, Eye, EyeOff, RotateCcw, Loader2, ExternalLink, Sparkles,
+  Brush,
+  Heading as HeadingIcon,
+  Mail,
+  RotateCcw,
+  Save,
+  Sparkles,
+  Tag,
+  TextCursor,
+  TriangleAlert,
 } from "lucide-react";
-import {
-  getEmailDraft,
-  saveEmailDraft,
-  deleteEmailDraft,
-  getComposerPreview,
-  type EmailPreviewLang,
-} from "@/lib/api";
 
-const EmailEditor = lazy(() => import("react-email-editor"));
+const API = import.meta.env.VITE_API_URL ?? "";
 
-const LANGS: Array<{ code: EmailPreviewLang; label: string }> = [
-  { code: "es", label: "Español" },
-  { code: "en", label: "English" },
-  { code: "pt", label: "Português" },
-  { code: "ar", label: "العربية" },
-  { code: "zh", label: "中文" },
+// ── Types mirror lib/email_template_config.ts ───────────────────────────────
+type TemplateConfig = {
+  brand: {
+    companyName: string;
+    logoUrl?: string;
+    primaryColor: string;
+    accentColor: string;
+    successColor: string;
+  };
+  header: { tagline: string; title: string; greeting: string };
+  hero: { label: string; savingsCopy: string };
+  body: { beforeLabel: string; afterLabel: string; rationaleLabel: string };
+  cta: { label: string; url: string };
+  footer: { supportEmail: string; footerCopy: string };
+  updatedAt?: string;
+};
+
+const EMPTY: TemplateConfig = {
+  brand: { companyName: "", primaryColor: "#0F1B2D", accentColor: "#F8B03B", successColor: "#16A34A" },
+  header: { tagline: "", title: "", greeting: "" },
+  hero: { label: "", savingsCopy: "" },
+  body: { beforeLabel: "", afterLabel: "", rationaleLabel: "" },
+  cta: { label: "", url: "" },
+  footer: { supportEmail: "", footerCopy: "" },
+};
+
+const TOKENS = [
+  { key: "client_name", help: "Nombre del cliente" },
+  { key: "company_name", help: "Nombre empresa" },
+  { key: "discount_percent", help: "Descuento aplicado (sin %)" },
+  { key: "discount_amount", help: "Ahorro mensual con moneda" },
+  { key: "new_price", help: "Factura nueva con moneda" },
+  { key: "current_price", help: "Factura actual con moneda" },
+  { key: "consumption_kwh", help: "Consumo kWh/mes" },
+  { key: "customer_type", help: "doméstico / pyme / industrial" },
+  { key: "city", help: "Ciudad del cliente" },
+  { key: "rule_id", help: "Regla aplicada" },
+  { key: "quote_id", help: "Referencia interna" },
 ];
-
-// Merge tags shown in Unlayer's right-panel dropdown. When the user
-// inserts one, it appears as {{key}} in the exported HTML and is
-// substituted server-side at send time using real bill data.
-const MERGE_TAGS = {
-  name: { name: "Nombre del cliente", value: "{{name}}", sample: "María" },
-  provider: { name: "Proveedor", value: "{{provider}}", sample: "EPM" },
-  kwh: { name: "Consumo mensual", value: "{{kwh}}", sample: "247 kWh" },
-  monthlyBill: { name: "Factura actual", value: "{{monthlyBill}}", sample: "COP 536,729" },
-  rate: { name: "Tarifa", value: "{{rate}}", sample: "COP 859/kWh" },
-  monthlySavings: { name: "Ahorro mensual", value: "{{monthlySavings}}", sample: "COP 209,324" },
-  yearlySavings: { name: "Ahorro anual", value: "{{yearlySavings}}", sample: "COP 2,511,888" },
-  tenYearSavings: { name: "Ahorro 10 años", value: "{{tenYearSavings}}", sample: "COP 25,118,880" },
-  twentyFiveYearSavings: { name: "Ahorro 25 años", value: "{{twentyFiveYearSavings}}", sample: "COP 62,797,200" },
-  pct: { name: "% de ahorro", value: "{{pct}}", sample: "39%" },
-  companyName: { name: "Empresa", value: "{{companyName}}", sample: "Ancestro" },
-  ctaUrl: { name: "URL del CTA", value: "{{ctaUrl}}", sample: "https://ancestro.ai/agendar" },
-  currency: { name: "Moneda", value: "{{currency}}", sample: "COP" },
-};
-
-// Default Unlayer design used when there's no saved draft yet.
-// This is a simple 3-section email the user can then modify.
-const DEFAULT_DESIGN = {
-  body: {
-    rows: [
-      {
-        cells: [1],
-        columns: [
-          {
-            contents: [
-              {
-                type: "heading",
-                values: {
-                  containerPadding: "20px",
-                  headingType: "h1",
-                  fontSize: "28px",
-                  textAlign: "center",
-                  text: "Tu propuesta solar, {{name}}",
-                  color: "#1a1a2e",
-                },
-              },
-              {
-                type: "text",
-                values: {
-                  containerPadding: "12px 20px",
-                  fontSize: "15px",
-                  textAlign: "left",
-                  text: "<p>Analizamos tu factura de <strong>{{provider}}</strong> y calculamos tu ahorro con energía solar:</p>",
-                  color: "#374151",
-                },
-              },
-              {
-                type: "text",
-                values: {
-                  containerPadding: "10px 20px",
-                  fontSize: "16px",
-                  textAlign: "left",
-                  text: "<p><strong>Factura actual:</strong> {{monthlyBill}}<br><strong>Ahorro mensual:</strong> {{monthlySavings}} ({{pct}})<br><strong>Ahorro en 25 años:</strong> {{twentyFiveYearSavings}}</p>",
-                  color: "#1a1a2e",
-                },
-              },
-              {
-                type: "button",
-                values: {
-                  containerPadding: "20px",
-                  buttonColors: { color: "#ffffff", backgroundColor: "#f97316" },
-                  size: { autoWidth: true, width: "100%" },
-                  fontSize: "15px",
-                  textAlign: "center",
-                  padding: "14px 32px",
-                  border: {},
-                  borderRadius: "8px",
-                  href: { name: "web", values: { href: "{{ctaUrl}}", target: "_blank" } },
-                  text: "Agendar llamada",
-                },
-              },
-              {
-                type: "text",
-                values: {
-                  containerPadding: "20px",
-                  fontSize: "12px",
-                  textAlign: "center",
-                  text: "<p>— {{companyName}}</p>",
-                  color: "#6b7280",
-                },
-              },
-            ],
-          },
-        ],
-        values: { backgroundColor: "#ffffff" },
-      },
-    ],
-    values: {
-      backgroundColor: "#f4f5f7",
-      contentWidth: "600px",
-      fontFamily: { label: "Inter", value: "'Inter', sans-serif" },
-    },
-  },
-  counters: { u_row: 1, u_column: 1, u_content_text: 3, u_content_heading: 1, u_content_button: 1 },
-};
 
 export default function EmailComposerPage() {
   const { toast } = useToast();
-  const emailEditorRef = useRef<EditorRef>(null);
-  const [isLoaded, setIsLoaded] = useState(false);
-  const [initialDesign, setInitialDesign] = useState<Record<string, unknown> | null>(null);
-  const [isSaving, setIsSaving] = useState(false);
-  const [showPreview, setShowPreview] = useState(false);
-  const [previewLang, setPreviewLang] = useState<EmailPreviewLang>("es");
-  const [previewHtml, setPreviewHtml] = useState<string>("");
-  const previewBlobUrl = useRef<string>("");
+  const [config, setConfig] = useState<TemplateConfig>(EMPTY);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [dirty, setDirty] = useState(false);
+  const [activeField, setActiveField] = useState<{ block: keyof TemplateConfig; field: string } | null>(null);
 
-  // Load saved design on mount.
   useEffect(() => {
-    let cancelled = false;
     (async () => {
       try {
-        const draft = await getEmailDraft();
-        if (cancelled) return;
-        setInitialDesign((draft.design as Record<string, unknown>) || DEFAULT_DESIGN);
-      } catch {
-        if (!cancelled) setInitialDesign(DEFAULT_DESIGN);
-      }
-    })();
-    return () => { cancelled = true; };
-  }, []);
-
-  // When Unlayer is ready AND we have the initial design, load it.
-  const onReady: EmailEditorProps["onReady"] = (unlayer) => {
-    if (initialDesign) {
-      unlayer.loadDesign(initialDesign as any);
-    }
-    setIsLoaded(true);
-  };
-
-  // Re-load design if it arrives after onReady.
-  useEffect(() => {
-    if (isLoaded && initialDesign && emailEditorRef.current?.editor) {
-      emailEditorRef.current.editor.loadDesign(initialDesign as any);
-    }
-  }, [isLoaded, initialDesign]);
-
-  const handleSave = async () => {
-    const unlayer = emailEditorRef.current?.editor;
-    if (!unlayer) return;
-    setIsSaving(true);
-    unlayer.exportHtml(async (data) => {
-      try {
-        await saveEmailDraft(data.html, data.design);
-        toast({ title: "Guardado", description: "Los próximos emails usarán esta plantilla." });
-        // Refresh preview if open.
-        if (showPreview) {
-          const rendered = await getComposerPreview(previewLang);
-          setPreviewHtml(rendered);
-        }
-      } catch (err: any) {
-        toast({ title: "Error", description: err.message || "No se pudo guardar.", variant: "destructive" });
+        const r = await fetch(`${API}/api/email-editor/template-config`, { credentials: "include" });
+        if (!r.ok) throw new Error(`load ${r.status}`);
+        const d = (await r.json()) as { config: TemplateConfig };
+        setConfig(d.config);
+      } catch (e) {
+        toast({
+          title: "No pude cargar la plantilla",
+          description: (e as Error).message,
+          variant: "destructive",
+        });
       } finally {
-        setIsSaving(false);
+        setLoading(false);
       }
-    });
-  };
-
-  const handlePreview = async () => {
-    const unlayer = emailEditorRef.current?.editor;
-    if (!unlayer) return;
-    unlayer.exportHtml(async (data) => {
-      try {
-        // Save before previewing so the server uses the latest version.
-        await saveEmailDraft(data.html, data.design);
-        const rendered = await getComposerPreview(previewLang);
-        setPreviewHtml(rendered);
-        setShowPreview(true);
-      } catch (err: any) {
-        toast({ title: "Preview error", description: err.message, variant: "destructive" });
-      }
-    });
-  };
-
-  const handleReset = async () => {
-    if (!confirm("¿Borrar la plantilla guardada y volver al template de código?")) return;
-    try {
-      await deleteEmailDraft();
-      toast({ title: "Restablecido", description: "Se usará el template React por defecto." });
-      // Reload the editor with the default design.
-      emailEditorRef.current?.editor?.loadDesign(DEFAULT_DESIGN as any);
-    } catch (err: any) {
-      toast({ title: "Error", description: err.message, variant: "destructive" });
-    }
-  };
-
-  // Refresh preview when language changes.
-  useEffect(() => {
-    if (!showPreview) return;
-    let cancelled = false;
-    (async () => {
-      try {
-        const rendered = await getComposerPreview(previewLang);
-        if (!cancelled) setPreviewHtml(rendered);
-      } catch {}
     })();
-    return () => { cancelled = true; };
-  }, [previewLang, showPreview]);
+  }, [toast]);
 
-  const previewUrl = useMemo(() => {
-    if (previewBlobUrl.current) {
-      URL.revokeObjectURL(previewBlobUrl.current);
-      previewBlobUrl.current = "";
-    }
-    if (!previewHtml) return "";
-    const url = URL.createObjectURL(new Blob([previewHtml], { type: "text/html" }));
-    previewBlobUrl.current = url;
-    return url;
-  }, [previewHtml]);
-
-  useEffect(() => {
-    return () => {
-      if (previewBlobUrl.current) URL.revokeObjectURL(previewBlobUrl.current);
-    };
+  const patch = useCallback(<B extends keyof TemplateConfig>(block: B, field: string, value: string) => {
+    setConfig((prev) => ({
+      ...prev,
+      [block]: { ...(prev[block] as object), [field]: value } as TemplateConfig[B],
+    }));
+    setDirty(true);
   }, []);
+
+  const insertToken = useCallback(
+    (token: string) => {
+      if (!activeField) {
+        toast({ title: "Selecciona un campo primero", description: "Haz click en un input para insertar la variable." });
+        return;
+      }
+      const current = (config[activeField.block] as Record<string, string>)[activeField.field] ?? "";
+      patch(activeField.block, activeField.field, `${current}{{${token}}}`);
+    },
+    [activeField, config, patch, toast],
+  );
+
+  const onSave = async () => {
+    setSaving(true);
+    try {
+      const r = await fetch(`${API}/api/email-editor/template-config`, {
+        method: "PUT",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(config),
+      });
+      if (!r.ok) throw new Error(`save ${r.status}`);
+      const d = (await r.json()) as { config: TemplateConfig };
+      setConfig(d.config);
+      setDirty(false);
+      toast({ title: "Plantilla guardada", description: "Los próximos envíos usan esta versión." });
+    } catch (e) {
+      toast({ title: "Error guardando", description: (e as Error).message, variant: "destructive" });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const onReset = async () => {
+    if (!confirm("¿Restablecer la plantilla a sus valores por defecto?")) return;
+    setSaving(true);
+    try {
+      const r = await fetch(`${API}/api/email-editor/template-config`, {
+        method: "DELETE",
+        credentials: "include",
+      });
+      if (!r.ok) throw new Error(`reset ${r.status}`);
+      const d = (await r.json()) as { config: TemplateConfig };
+      setConfig(d.config);
+      setDirty(false);
+      toast({ title: "Plantilla restablecida" });
+    } catch (e) {
+      toast({ title: "Error", description: (e as Error).message, variant: "destructive" });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const previewSrcDoc = useLivePreview(config);
+
+  if (loading) {
+    return (
+      <AppLayout>
+        <div className="p-6 text-muted-foreground text-sm">Cargando plantilla…</div>
+      </AppLayout>
+    );
+  }
 
   return (
     <AppLayout>
-      <div className="p-6 space-y-4">
-        {/* Header */}
-        <div className="flex items-start justify-between gap-4 flex-wrap">
-          <div>
-            <div className="flex items-center gap-2">
-              <Mail className="w-5 h-5 text-primary" />
-              <h1 className="text-2xl font-semibold">Email Composer</h1>
-            </div>
-            <p className="text-sm text-muted-foreground mt-1 max-w-3xl">
-              Arrastrá bloques (heading, text, button, image, columns, divider) desde el panel derecho.
-              Los <span className="inline-flex items-center gap-1"><Sparkles className="w-3 h-3" /><strong>merge tags</strong></span>{" "}
-              (nombre, factura, ahorro, etc.) se insertan desde el menú del editor y se reemplazan con
-              los datos reales del usuario al enviar.
+      <div className="p-6 max-w-[1600px] mx-auto">
+        <div className="flex items-start gap-3 mb-6">
+          <div className="flex-1">
+            <h1 className="text-2xl font-semibold tracking-tight flex items-center gap-2">
+              <Mail className="h-6 w-6" /> Email Composer
+            </h1>
+            <p className="text-sm text-muted-foreground">
+              Edita la plantilla React Email del cotizador. Live preview a la derecha. Inserta variables como{" "}
+              <code className="bg-muted px-1 rounded text-xs">{"{{client_name}}"}</code> en cualquier texto.
             </p>
+            {dirty && (
+              <p className="text-xs text-amber-600 mt-1 flex items-center gap-1">
+                <TriangleAlert className="h-3 w-3" /> Hay cambios sin guardar
+              </p>
+            )}
           </div>
-          <div className="flex items-center gap-2 flex-wrap">
-            <Button variant="outline" size="sm" onClick={handleReset}>
-              <RotateCcw className="w-4 h-4 mr-2" /> Template de código
-            </Button>
-            <Button variant="outline" size="sm" onClick={handlePreview} disabled={!isLoaded}>
-              {showPreview ? <EyeOff className="w-4 h-4 mr-2" /> : <Eye className="w-4 h-4 mr-2" />}
-              Preview
-            </Button>
-            <Button size="sm" onClick={handleSave} disabled={!isLoaded || isSaving}>
-              {isSaving ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Save className="w-4 h-4 mr-2" />}
-              {isSaving ? "Guardando..." : "Guardar y publicar"}
-            </Button>
-          </div>
+          <Button variant="outline" onClick={onReset} disabled={saving}>
+            <RotateCcw className="h-4 w-4 mr-2" /> Reset
+          </Button>
+          <Button onClick={onSave} disabled={saving || !dirty}>
+            <Save className="h-4 w-4 mr-2" /> {saving ? "Guardando…" : "Guardar"}
+          </Button>
         </div>
 
-        {/* Editor */}
-        <Card className="overflow-hidden">
-          <CardContent className="p-0">
-            <div style={{ height: "75vh", minHeight: 640 }}>
-              {!isLoaded && (
-                <div className="h-full flex items-center justify-center text-muted-foreground gap-2">
-                  <Loader2 className="w-4 h-4 animate-spin" /> Cargando editor...
-                </div>
-              )}
-              <Suspense fallback={
-                <div className="h-full flex items-center justify-center text-muted-foreground gap-2">
-                  <Loader2 className="w-4 h-4 animate-spin" /> Cargando editor...
-                </div>
-              }>
-              <EmailEditor
-                ref={emailEditorRef}
-                onReady={onReady}
-                minHeight="75vh"
-                options={{
-                  appearance: { theme: "light" },
-                  mergeTags: MERGE_TAGS,
-                  displayMode: "email",
-                  features: { preview: true, textEditor: { tables: true } },
-                }}
-              />
-              </Suspense>
-            </div>
-          </CardContent>
-        </Card>
+        <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_640px] gap-6">
+          <div>
+            <Tabs defaultValue="brand">
+              <TabsList className="grid grid-cols-5 mb-4">
+                <TabsTrigger value="brand"><Brush className="h-4 w-4 mr-1.5" /> Brand</TabsTrigger>
+                <TabsTrigger value="header"><HeadingIcon className="h-4 w-4 mr-1.5" /> Header</TabsTrigger>
+                <TabsTrigger value="hero"><Sparkles className="h-4 w-4 mr-1.5" /> Hero</TabsTrigger>
+                <TabsTrigger value="body"><TextCursor className="h-4 w-4 mr-1.5" /> Body</TabsTrigger>
+                <TabsTrigger value="cta"><Tag className="h-4 w-4 mr-1.5" /> CTA & Footer</TabsTrigger>
+              </TabsList>
 
-        {/* Preview */}
-        {showPreview && (
-          <Card className="overflow-hidden">
-            <CardHeader className="pb-2 border-b">
-              <div className="flex items-center justify-between gap-3 flex-wrap">
-                <div>
-                  <CardTitle className="text-sm">Preview con datos reales</CardTitle>
-                  <CardDescription>
-                    Factura de ejemplo: EPM, 247 kWh, COP 536,729. Los <code>{"{{tags}}"}</code>{" "}
-                    se reemplazan con los valores reales.
-                  </CardDescription>
+              <TabsContent value="brand">
+                <Card>
+                  <CardHeader>
+                    <CardTitle className="text-base">Marca</CardTitle>
+                    <CardDescription>Colores del header y nombre de la empresa.</CardDescription>
+                  </CardHeader>
+                  <CardContent className="space-y-3">
+                    <Field label="Nombre empresa" value={config.brand.companyName} onChange={(v) => patch("brand", "companyName", v)} onFocus={() => setActiveField({ block: "brand", field: "companyName" })} />
+                    <Field label="Logo URL (opcional)" value={config.brand.logoUrl ?? ""} onChange={(v) => patch("brand", "logoUrl", v)} onFocus={() => setActiveField({ block: "brand", field: "logoUrl" })} placeholder="https://…/logo.png" />
+                    <div className="grid grid-cols-3 gap-3">
+                      <ColorField label="Primary (navy)" value={config.brand.primaryColor} onChange={(v) => patch("brand", "primaryColor", v)} />
+                      <ColorField label="Accent (amber)" value={config.brand.accentColor} onChange={(v) => patch("brand", "accentColor", v)} />
+                      <ColorField label="Success (green)" value={config.brand.successColor} onChange={(v) => patch("brand", "successColor", v)} />
+                    </div>
+                  </CardContent>
+                </Card>
+              </TabsContent>
+
+              <TabsContent value="header">
+                <Card>
+                  <CardHeader>
+                    <CardTitle className="text-base">Header</CardTitle>
+                    <CardDescription>Banda superior del email con el saludo.</CardDescription>
+                  </CardHeader>
+                  <CardContent className="space-y-3">
+                    <Field label="Tagline" value={config.header.tagline} onChange={(v) => patch("header", "tagline", v)} onFocus={() => setActiveField({ block: "header", field: "tagline" })} />
+                    <Field label="Título" value={config.header.title} onChange={(v) => patch("header", "title", v)} onFocus={() => setActiveField({ block: "header", field: "title" })} />
+                    <TextField label="Saludo" value={config.header.greeting} onChange={(v) => patch("header", "greeting", v)} onFocus={() => setActiveField({ block: "header", field: "greeting" })} rows={3} />
+                  </CardContent>
+                </Card>
+              </TabsContent>
+
+              <TabsContent value="hero">
+                <Card>
+                  <CardHeader>
+                    <CardTitle className="text-base">Hero (descuento grande)</CardTitle>
+                    <CardDescription>El bloque con el % grande y el copy de ahorro.</CardDescription>
+                  </CardHeader>
+                  <CardContent className="space-y-3">
+                    <Field label="Etiqueta sobre el %" value={config.hero.label} onChange={(v) => patch("hero", "label", v)} onFocus={() => setActiveField({ block: "hero", field: "label" })} />
+                    <Field label="Copy de ahorro" value={config.hero.savingsCopy} onChange={(v) => patch("hero", "savingsCopy", v)} onFocus={() => setActiveField({ block: "hero", field: "savingsCopy" })} />
+                  </CardContent>
+                </Card>
+              </TabsContent>
+
+              <TabsContent value="body">
+                <Card>
+                  <CardHeader>
+                    <CardTitle className="text-base">Body</CardTitle>
+                    <CardDescription>Etiquetas de la comparación antes/después y rationale.</CardDescription>
+                  </CardHeader>
+                  <CardContent className="space-y-3">
+                    <Field label="Etiqueta «Antes»" value={config.body.beforeLabel} onChange={(v) => patch("body", "beforeLabel", v)} onFocus={() => setActiveField({ block: "body", field: "beforeLabel" })} />
+                    <Field label="Etiqueta «Después»" value={config.body.afterLabel} onChange={(v) => patch("body", "afterLabel", v)} onFocus={() => setActiveField({ block: "body", field: "afterLabel" })} />
+                    <Field label="Etiqueta «Rationale»" value={config.body.rationaleLabel} onChange={(v) => patch("body", "rationaleLabel", v)} onFocus={() => setActiveField({ block: "body", field: "rationaleLabel" })} />
+                  </CardContent>
+                </Card>
+              </TabsContent>
+
+              <TabsContent value="cta">
+                <Card>
+                  <CardHeader>
+                    <CardTitle className="text-base">CTA y Footer</CardTitle>
+                    <CardDescription>Botón principal + copy y soporte del footer.</CardDescription>
+                  </CardHeader>
+                  <CardContent className="space-y-3">
+                    <Field label="Texto del botón" value={config.cta.label} onChange={(v) => patch("cta", "label", v)} onFocus={() => setActiveField({ block: "cta", field: "label" })} />
+                    <Field label="URL del botón" value={config.cta.url} onChange={(v) => patch("cta", "url", v)} onFocus={() => setActiveField({ block: "cta", field: "url" })} placeholder="https://…" />
+                    <Field label="Email de soporte" value={config.footer.supportEmail} onChange={(v) => patch("footer", "supportEmail", v)} onFocus={() => setActiveField({ block: "footer", field: "supportEmail" })} />
+                    <TextField label="Copy del footer" value={config.footer.footerCopy} onChange={(v) => patch("footer", "footerCopy", v)} onFocus={() => setActiveField({ block: "footer", field: "footerCopy" })} rows={2} />
+                  </CardContent>
+                </Card>
+              </TabsContent>
+            </Tabs>
+
+            <Card className="mt-4">
+              <CardHeader>
+                <CardTitle className="text-sm">Variables disponibles</CardTitle>
+                <CardDescription className="text-xs">Click para insertar en el campo activo.</CardDescription>
+              </CardHeader>
+              <CardContent>
+                <div className="flex flex-wrap gap-1.5">
+                  {TOKENS.map((t) => (
+                    <button
+                      key={t.key}
+                      type="button"
+                      onClick={() => insertToken(t.key)}
+                      className="text-xs px-2 py-1 rounded bg-muted hover:bg-accent transition-colors"
+                      title={t.help}
+                    >
+                      <code>{`{{${t.key}}}`}</code>
+                    </button>
+                  ))}
                 </div>
-                <div className="flex items-center gap-2">
-                  <Tabs value={previewLang} onValueChange={(v) => setPreviewLang(v as EmailPreviewLang)}>
-                    <TabsList>
-                      {LANGS.map((l) => (
-                        <TabsTrigger key={l.code} value={l.code} className="text-xs">
-                          {l.label}
-                        </TabsTrigger>
-                      ))}
-                    </TabsList>
-                  </Tabs>
-                  {previewUrl && (
-                    <Button variant="ghost" size="sm" asChild>
-                      <a href={previewUrl} target="_blank" rel="noopener noreferrer">
-                        <ExternalLink className="w-4 h-4" />
-                      </a>
-                    </Button>
-                  )}
+              </CardContent>
+            </Card>
+          </div>
+
+          <div>
+            <Card>
+              <CardHeader className="pb-2">
+                <div className="flex items-center justify-between">
+                  <CardTitle className="text-sm">Preview en vivo</CardTitle>
+                  <span className="text-xs text-muted-foreground">React Email</span>
                 </div>
-              </div>
-            </CardHeader>
-            <CardContent className="p-0">
-              {previewUrl ? (
+              </CardHeader>
+              <CardContent className="p-0">
                 <iframe
-                  src={previewUrl}
-                  title="Preview"
-                  className="w-full border-0 block bg-white"
-                  style={{ height: 800 }}
+                  srcDoc={previewSrcDoc}
+                  className="w-full h-[840px] border-0 bg-[#F1F5F9]"
+                  title="Email preview"
                 />
-              ) : (
-                <div className="p-8 text-center text-sm text-muted-foreground">
-                  Preview no disponible.
-                </div>
-              )}
-            </CardContent>
-          </Card>
-        )}
+              </CardContent>
+            </Card>
+          </div>
+        </div>
       </div>
     </AppLayout>
   );
+}
+
+function Field(props: {
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+  onFocus?: () => void;
+  placeholder?: string;
+}) {
+  return (
+    <div className="space-y-1">
+      <Label className="text-xs text-muted-foreground">{props.label}</Label>
+      <Input
+        value={props.value}
+        onChange={(e) => props.onChange(e.target.value)}
+        onFocus={props.onFocus}
+        placeholder={props.placeholder}
+      />
+    </div>
+  );
+}
+
+function TextField(props: {
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+  onFocus?: () => void;
+  rows?: number;
+}) {
+  return (
+    <div className="space-y-1">
+      <Label className="text-xs text-muted-foreground">{props.label}</Label>
+      <Textarea
+        value={props.value}
+        onChange={(e) => props.onChange(e.target.value)}
+        onFocus={props.onFocus}
+        rows={props.rows ?? 2}
+      />
+    </div>
+  );
+}
+
+function ColorField(props: { label: string; value: string; onChange: (v: string) => void }) {
+  return (
+    <div className="space-y-1">
+      <Label className="text-xs text-muted-foreground">{props.label}</Label>
+      <div className="flex items-center gap-2">
+        <input
+          type="color"
+          value={props.value}
+          onChange={(e) => props.onChange(e.target.value)}
+          className="h-9 w-12 rounded border bg-background cursor-pointer"
+        />
+        <Input value={props.value} onChange={(e) => props.onChange(e.target.value)} className="font-mono text-xs" />
+      </div>
+    </div>
+  );
+}
+
+/** Debounced live preview — POSTs the current config and renders the returned HTML in an iframe via srcDoc. */
+function useLivePreview(config: TemplateConfig): string {
+  const [html, setHtml] = useState<string>(
+    "<html><body style='font-family:system-ui;padding:24px;color:#64748b'>Cargando preview…</body></html>",
+  );
+  // Stringify so the deep-equality check works cleanly.
+  const key = useMemo(() => JSON.stringify(config), [config]);
+  const debounceRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    if (debounceRef.current) window.clearTimeout(debounceRef.current);
+    debounceRef.current = window.setTimeout(async () => {
+      try {
+        const res = await fetch(`${API}/api/email/template/preview`, {
+          method: "POST",
+          credentials: "include",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ config }),
+        });
+        if (!res.ok) throw new Error(`preview ${res.status}`);
+        setHtml(await res.text());
+      } catch (e) {
+        setHtml(
+          `<html><body style='font-family:system-ui;padding:24px;color:#dc2626'>Error al renderizar preview: ${
+            (e as Error).message
+          }</body></html>`,
+        );
+      }
+    }, 300);
+    return () => {
+      if (debounceRef.current) window.clearTimeout(debounceRef.current);
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key]);
+
+  return html;
 }
