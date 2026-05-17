@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Loader2, ShieldCheck } from "lucide-react";
-import { sendChatMessage, type SessionInfo } from "@/lib/api";
+import { login, type SessionInfo } from "@/lib/api";
 
 interface LoginPageProps {
   onLogin: () => Promise<void> | void;
@@ -8,38 +8,34 @@ interface LoginPageProps {
 }
 
 /**
- * memory.ancestro.ai has no /auth/login endpoint. Identity is established by
- * the chat's register_user tool, which fires when the user reveals their
- * email. If that email is listed in ADMIN_EMAILS on the backend, the
- * resulting session has is_admin = true.
+ * Password-based admin login.
  *
- * This page packages that flow as a familiar form. We send the form contents
- * as a chat turn; backend tools handle the rest.
+ * memory.ancestro.ai exposes `POST /api/auth/login` which verifies the
+ * (email, password) pair against bcrypt hashes in `ADMIN_USERS`. On success,
+ * the backend sets a signed session cookie with `status: "auth"` and
+ * `is_admin: true` (if the email is also in `ADMIN_EMAILS`).
  */
 export default function LoginPage({ onLogin, session }: LoginPageProps) {
-  const [name, setName] = useState(session?.user?.name ?? "");
   const [email, setEmail] = useState(session?.user?.email ?? "");
-  const [company, setCompany] = useState(session?.user?.company ?? "");
+  const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (!email.trim() || !name.trim()) {
-      setError("Name and email are required.");
+    if (!email.trim() || !password) {
+      setError("Email and password are required.");
       return;
     }
     setBusy(true);
     setError(null);
 
     try {
-      const message = `Soy ${name.trim()}, mi email es ${email.trim().toLowerCase()}${
-        company.trim() ? `, empresa ${company.trim()}` : ""
-      }. Ábreme la consola de administración.`;
-      await sendChatMessage(message, []);
+      await login(email.trim().toLowerCase(), password);
       await onLogin();
     } catch (e) {
-      setError((e as Error).message ?? "Login failed");
+      const msg = (e as Error).message ?? "Login failed";
+      setError(msg.toLowerCase().includes("credential") ? "Invalid email or password." : msg);
     } finally {
       setBusy(false);
     }
@@ -53,22 +49,10 @@ export default function LoginPage({ onLogin, session }: LoginPageProps) {
           <h1 className="text-lg font-semibold">Admin console</h1>
         </div>
         <p className="text-sm text-muted-foreground mb-4">
-          Identify yourself to access the admin console. Your email must be in{" "}
-          <code className="text-xs bg-muted px-1 rounded">ADMIN_EMAILS</code> on
-          the backend.
+          Sign in with your admin credentials.
         </p>
 
         <form onSubmit={handleSubmit} className="space-y-3">
-          <div>
-            <label className="text-xs font-medium text-foreground/80">Name</label>
-            <input
-              className="mt-1 w-full px-3 py-2 border rounded-md bg-background text-sm"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              disabled={busy}
-              autoFocus
-            />
-          </div>
           <div>
             <label className="text-xs font-medium text-foreground/80">Email</label>
             <input
@@ -77,17 +61,21 @@ export default function LoginPage({ onLogin, session }: LoginPageProps) {
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               disabled={busy}
+              autoFocus
+              autoComplete="email"
+              required
             />
           </div>
           <div>
-            <label className="text-xs font-medium text-foreground/80">
-              Company <span className="text-muted-foreground">(optional)</span>
-            </label>
+            <label className="text-xs font-medium text-foreground/80">Password</label>
             <input
+              type="password"
               className="mt-1 w-full px-3 py-2 border rounded-md bg-background text-sm"
-              value={company}
-              onChange={(e) => setCompany(e.target.value)}
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
               disabled={busy}
+              autoComplete="current-password"
+              required
             />
           </div>
           {error && (
@@ -101,7 +89,7 @@ export default function LoginPage({ onLogin, session }: LoginPageProps) {
             className="w-full inline-flex items-center justify-center gap-2 bg-primary text-primary-foreground rounded-md py-2 text-sm font-medium hover:opacity-90 disabled:opacity-50"
           >
             {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : null}
-            {busy ? "Authenticating…" : "Enter"}
+            {busy ? "Signing in…" : "Sign in"}
           </button>
         </form>
 

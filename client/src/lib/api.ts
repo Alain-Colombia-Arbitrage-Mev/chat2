@@ -78,6 +78,28 @@ export async function forgetMe(): Promise<{
   return fetchJSON("/api/me/forget", { method: "POST" });
 }
 
+export interface LoginResponse {
+  ok: true;
+  user: {
+    id: string;
+    email: string;
+    name?: string;
+    company?: string;
+    is_admin: boolean;
+  };
+}
+
+export async function login(
+  email: string,
+  password: string,
+): Promise<LoginResponse> {
+  return fetchJSON<LoginResponse>("/api/auth/login", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email, password }),
+  });
+}
+
 // Legacy auth helpers kept for compatibility with existing imports — no-ops now.
 export function setAuthToken(_token: string, _expiry: number) {}
 export function clearAuth() {}
