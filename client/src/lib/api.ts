@@ -225,43 +225,6 @@ export async function epcCheckout(
   });
 }
 
-export interface EpcProject {
-  id: string;
-  title: string;
-  country: string;
-  region?: string;
-  capacityKwp?: number;
-  customerType?: string;
-  budgetUsd?: number;
-  deadline?: string;
-  description?: string;
-  status: "open" | "assigned" | "closed";
-  applicantsCount: number;
-  createdAt: number;
-}
-
-export interface EpcCompany {
-  id: string;
-  name: string;
-  country: string;
-  status: string;
-  contactEmail: string;
-}
-
-export async function epcListProjects(): Promise<{
-  company: EpcCompany;
-  available: EpcProject[];
-  applied: EpcProject[];
-}> {
-  return fetchJSON("/api/epc/projects");
-}
-
-export async function epcApplyToProject(projectId: string): Promise<{ ok: boolean; alreadyApplied: boolean; project: EpcProject }> {
-  return fetchJSON(`/api/epc/projects/${encodeURIComponent(projectId)}/apply`, {
-    method: "POST",
-  });
-}
-
 export async function epcUploadKybDoc(
   companyId: string,
   file: File,
