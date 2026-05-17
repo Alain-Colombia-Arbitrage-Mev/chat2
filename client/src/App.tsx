@@ -15,6 +15,7 @@ const EmbedConfigPage = lazy(() => import("@/pages/EmbedConfigPage"));
 const EmbeddableWidgetPage = lazy(() => import("@/pages/EmbeddableWidgetPage"));
 const AnalyticsPage = lazy(() => import("@/pages/AnalyticsPage"));
 const EmailComposerPage = lazy(() => import("@/pages/EmailComposerPage"));
+const EpcDashboardPage = lazy(() => import("@/pages/EpcDashboardPage"));
 const LoginPage = lazy(() => import("@/pages/LoginPage"));
 
 function PageLoader() {
@@ -103,7 +104,13 @@ function App() {
       <TooltipProvider>
         <Toaster />
         <Suspense fallback={<PageLoader />}>
-          {location === "/widget" ? <EmbeddableWidgetPage /> : <AuthGate />}
+          {location === "/widget" ? (
+            <EmbeddableWidgetPage />
+          ) : location === "/epc" ? (
+            <EpcDashboardPage />
+          ) : (
+            <AuthGate />
+          )}
         </Suspense>
       </TooltipProvider>
     </QueryClientProvider>

@@ -16,10 +16,11 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { useToast } from "@/hooks/use-toast";
-import { LivePreview, renderDocToHtml } from "@/lib/email/LivePreview";
+import { renderDocToHtml } from "@/lib/email/LivePreview";
 import { BlockPalette, PaletteDragOverlay } from "@/lib/email/BlockPalette";
-import { BlockCanvas } from "@/lib/email/BlockCanvas";
+import { EmailCanvas } from "@/lib/email/EmailCanvas";
 import { BlockProperties } from "@/lib/email/BlockProperties";
 import {
   type Block,
@@ -30,6 +31,7 @@ import {
   TOKENS,
 } from "@/lib/email/blocks";
 import {
+  Eye,
   Mail,
   MousePointerClick,
   RotateCcw,
@@ -49,8 +51,9 @@ export default function EmailComposerPage() {
   const [dirty, setDirty] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [draggingPaletteType, setDraggingPaletteType] = useState<BlockType | null>(null);
+  const [previewOpen, setPreviewOpen] = useState(false);
+  const [previewHtml, setPreviewHtml] = useState<string>("");
 
-  // Load: try backend, fall back to localStorage, fall back to default doc.
   useEffect(() => {
     (async () => {
       try {
@@ -70,9 +73,7 @@ export default function EmailComposerPage() {
       if (cached) {
         try {
           const parsed = JSON.parse(cached) as EmailDoc;
-          if (parsed.schema === "blocks-v1") {
-            setDoc(parsed);
-          }
+          if (parsed.schema === "blocks-v1") setDoc(parsed);
         } catch {
           /* ignore */
         }
@@ -91,34 +92,22 @@ export default function EmailComposerPage() {
   const updateBlock = useCallback((id: string, patch: Partial<Block>) => {
     setDoc((d) => ({
       ...d,
-      blocks: d.blocks.map((b) =>
-        b.id === id
-          ? // Cast is safe — caller passes a partial of the same block type.
-            ({ ...b, ...patch } as Block)
-          : b,
-      ),
+      blocks: d.blocks.map((b) => (b.id === id ? ({ ...b, ...patch } as Block) : b)),
     }));
     setDirty(true);
   }, []);
 
-  // Called from the iframe (click-to-edit inline). The data-edit-path is
-  // "<block-id>:<field>" where field may be a nested path like "left.value".
+  // Inline edits: field may be "text", "label", "left.label", etc.
   const onInlineEdit = useCallback((blockId: string, field: string, value: string) => {
     setDoc((d) => ({
       ...d,
       blocks: d.blocks.map((b) => {
         if (b.id !== blockId) return b;
         const segs = field.split(".");
-        if (segs.length === 1) {
-          return { ...b, [segs[0]]: value } as Block;
-        }
-        // Two-level (columns.left.label etc.).
+        if (segs.length === 1) return { ...b, [segs[0]]: value } as Block;
         const [outer, inner] = segs as [string, string];
         const outerVal = (b as unknown as Record<string, Record<string, unknown>>)[outer];
-        return {
-          ...b,
-          [outer]: { ...outerVal, [inner]: value },
-        } as Block;
+        return { ...b, [outer]: { ...outerVal, [inner]: value } } as Block;
       }),
     }));
     setDirty(true);
@@ -143,11 +132,10 @@ export default function EmailComposerPage() {
       if (!selectedBlock) {
         toast({
           title: "Selecciona un bloque",
-          description: "Click sobre un bloque del preview o del canvas y luego inserta la variable.",
+          description: "Click sobre un bloque del canvas y luego inserta la variable.",
         });
         return;
       }
-      // For text-style blocks, append to `.text`. For button → `.label`. For others, no-op with hint.
       const t = `{{${token}}}`;
       if (selectedBlock.type === "heading" || selectedBlock.type === "text") {
         updateBlock(selectedBlock.id, { text: selectedBlock.text + t } as Partial<Block>);
@@ -158,7 +146,7 @@ export default function EmailComposerPage() {
       } else {
         toast({
           title: "Bloque sin texto",
-          description: "Este bloque no acepta variables. Selecciona un Heading, Texto, Botón o Hero.",
+          description: "Selecciona un Heading, Texto, Botón o Hero.",
         });
       }
     },
@@ -215,18 +203,29 @@ export default function EmailComposerPage() {
     }
   };
 
+  // ── Preview modal (final React Email render) ───────────────────────────────
+
+  const openPreview = useCallback(async () => {
+    setPreviewOpen(true);
+    try {
+      const html = await renderDocToHtml(doc);
+      setPreviewHtml(html);
+    } catch (e) {
+      setPreviewHtml(
+        `<html><body style="font-family:system-ui;padding:24px;color:#dc2626">Error: ${
+          (e as Error).message
+        }</body></html>`,
+      );
+    }
+  }, [doc]);
+
   // ── Persistence ────────────────────────────────────────────────────────────
 
   const onSave = async () => {
     setSaving(true);
     try {
       const html = await renderDocToHtml(doc);
-      const body = JSON.stringify({
-        schema: doc.schema,
-        brand: doc.brand,
-        blocks: doc.blocks,
-        html,
-      });
+      const body = JSON.stringify({ schema: doc.schema, brand: doc.brand, blocks: doc.blocks, html });
       let backendOk = false;
       try {
         const r = await fetch(`${API}/api/email-editor/template-config`, {
@@ -239,7 +238,6 @@ export default function EmailComposerPage() {
       } catch {
         backendOk = false;
       }
-      // Always cache locally so work isn't lost while the backend catches up to blocks-v1.
       localStorage.setItem(LOCAL_KEY, JSON.stringify(doc));
       setDirty(false);
       toast({
@@ -281,7 +279,7 @@ export default function EmailComposerPage() {
               </h1>
               <p className="text-sm text-muted-foreground flex items-center gap-1.5">
                 <MousePointerClick className="h-3.5 w-3.5" />
-                Arrastra bloques desde la paleta al canvas. Click en un bloque para editar sus propiedades.
+                Click sobre un bloque para seleccionar · Arrastra el grip para reordenar · Doble-click en un texto para editar
               </p>
               {dirty && (
                 <p className="text-xs text-amber-600 mt-1 flex items-center gap-1">
@@ -289,6 +287,9 @@ export default function EmailComposerPage() {
                 </p>
               )}
             </div>
+            <Button variant="outline" onClick={openPreview}>
+              <Eye className="h-4 w-4 mr-2" /> Vista previa real
+            </Button>
             <Button variant="outline" onClick={onReset} disabled={saving}>
               <RotateCcw className="h-4 w-4 mr-2" /> Reset
             </Button>
@@ -299,43 +300,34 @@ export default function EmailComposerPage() {
 
           <div className="grid grid-cols-1 xl:grid-cols-[220px_minmax(0,1fr)_360px] gap-4">
             {/* Palette */}
-            <div className="space-y-4">
-              <Card>
-                <CardHeader className="pb-2">
-                  <CardTitle className="text-sm">Bloques</CardTitle>
-                  <CardDescription className="text-xs">Arrastra al canvas.</CardDescription>
-                </CardHeader>
-                <CardContent>
-                  <BlockPalette />
-                </CardContent>
-              </Card>
+            <Card className="h-fit">
+              <CardHeader className="pb-2">
+                <CardTitle className="text-sm">Bloques</CardTitle>
+                <CardDescription className="text-xs">Arrastra al canvas.</CardDescription>
+              </CardHeader>
+              <CardContent>
+                <BlockPalette />
+              </CardContent>
+            </Card>
 
-              <Card>
-                <CardHeader className="pb-2">
-                  <CardTitle className="text-sm">Estructura</CardTitle>
-                  <CardDescription className="text-xs">Reordena, selecciona o elimina.</CardDescription>
-                </CardHeader>
-                <CardContent>
-                  <BlockCanvas
-                    blocks={doc.blocks}
-                    selectedId={selectedId}
-                    onSelect={setSelectedId}
-                    onDelete={deleteBlock}
-                  />
-                </CardContent>
-              </Card>
-            </div>
-
-            {/* Preview */}
+            {/* Editable canvas — primary surface */}
             <Card>
               <CardHeader className="pb-2">
                 <div className="flex items-center justify-between">
-                  <CardTitle className="text-sm">Preview</CardTitle>
-                  <span className="text-xs text-muted-foreground">React Email · render local</span>
+                  <CardTitle className="text-sm">Canvas</CardTitle>
+                  <span className="text-xs text-muted-foreground">
+                    {doc.blocks.length} bloques
+                  </span>
                 </div>
               </CardHeader>
-              <CardContent className="p-3">
-                <LivePreview doc={doc} onEdit={onInlineEdit} onSelect={setSelectedId} height={920} />
+              <CardContent className="p-2">
+                <EmailCanvas
+                  doc={doc}
+                  selectedId={selectedId}
+                  onSelect={setSelectedId}
+                  onEdit={onInlineEdit}
+                  onDelete={deleteBlock}
+                />
               </CardContent>
             </Card>
 
@@ -348,8 +340,8 @@ export default function EmailComposerPage() {
                   </CardTitle>
                   <CardDescription className="text-xs">
                     {selectedBlock
-                      ? "Cambios se aplican al instante en el preview."
-                      : "Click sobre un bloque del canvas o del preview."}
+                      ? "Cambios al instante."
+                      : "Click sobre un bloque del canvas."}
                   </CardDescription>
                 </CardHeader>
                 <CardContent>
@@ -359,9 +351,7 @@ export default function EmailComposerPage() {
                       onChange={(patch) => updateBlock(selectedBlock.id, patch)}
                     />
                   ) : (
-                    <p className="text-xs text-muted-foreground italic">
-                      Sin selección.
-                    </p>
+                    <p className="text-xs text-muted-foreground italic">Sin selección.</p>
                   )}
                 </CardContent>
               </Card>
@@ -372,7 +362,7 @@ export default function EmailComposerPage() {
                     <Tag className="h-3.5 w-3.5" /> Variables
                   </CardTitle>
                   <CardDescription className="text-xs">
-                    Click para insertar en el bloque de texto seleccionado.
+                    Insertar en el bloque seleccionado.
                   </CardDescription>
                 </CardHeader>
                 <CardContent>
@@ -396,7 +386,6 @@ export default function EmailComposerPage() {
               <Card>
                 <CardHeader className="pb-2">
                   <CardTitle className="text-sm">Marca global</CardTitle>
-                  <CardDescription className="text-xs">Aplica a toda la plantilla.</CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-3">
                   <BrandField label="Nombre empresa" value={doc.brand.companyName} onChange={(v) => updateBrand({ companyName: v })} />
@@ -416,6 +405,15 @@ export default function EmailComposerPage() {
           {draggingPaletteType ? <PaletteDragOverlay type={draggingPaletteType} /> : null}
         </DragOverlay>
       </DndContext>
+
+      <Dialog open={previewOpen} onOpenChange={setPreviewOpen}>
+        <DialogContent className="max-w-3xl">
+          <DialogHeader>
+            <DialogTitle>Vista previa real (React Email)</DialogTitle>
+          </DialogHeader>
+          <iframe srcDoc={previewHtml} title="Vista previa" className="w-full h-[700px] border rounded" />
+        </DialogContent>
+      </Dialog>
     </AppLayout>
   );
 }

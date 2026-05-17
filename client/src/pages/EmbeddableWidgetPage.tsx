@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import { getClientConfig, sendChatMessage } from "@/lib/api";
+import { epcCheckout, epcUploadKybDoc, getClientConfig, sendChatMessage, type Persona } from "@/lib/api";
 
 function getWidgetAgentId(): string {
   const params = new URLSearchParams(window.location.search);
@@ -40,6 +40,9 @@ async function sendWidgetMessage(
     sessionId: resp.session_id,
     sources: resp.sources,
     registered: resp.registered,
+    persona: resp.persona ?? "customer",
+    companyId: resp.company_id,
+    toolEvents: resp.tool_events,
   };
 }
 
@@ -95,6 +98,15 @@ export default function EmbeddableWidgetPage() {
   const [formData, setFormData] = useState({ name: "", email: "", phone: "" });
   const [formErrors, setFormErrors] = useState<Record<string, string>>({});
   const [sessionId, setSessionId] = useState<string | null>(null);
+  const [persona, setPersona] = useState<Persona>("customer");
+  const [companyId, setCompanyId] = useState<string | null>(null);
+  // Pending CTA surfaced by the backend's intent tools (request_epc_partnership / request_construction_credit).
+  const [pendingPayment, setPendingPayment] = useState<{
+    intent: "partnership" | "credit";
+    amount: number;
+    companyId: string;
+  } | null>(null);
+  const [paymentBusy, setPaymentBusy] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
@@ -169,6 +181,25 @@ export default function EmbeddableWidgetPage() {
       );
       if (response.sessionId && !sessionId) setSessionId(response.sessionId);
       setMessages((prev) => [...prev, { role: "assistant", content: response.response }]);
+      setPersona(response.persona);
+      if (response.companyId) setCompanyId(response.companyId);
+      // Pick up intent CTAs the backend just emitted.
+      const intentEvent = response.toolEvents?.find(
+        (e) => e.name === "request_epc_partnership" || e.name === "request_construction_credit",
+      );
+      if (intentEvent) {
+        const intent: "partnership" | "credit" =
+          intentEvent.name === "request_epc_partnership" ? "partnership" : "credit";
+        const data = intentEvent.result as { company_id?: string; amount_usd?: number };
+        const cid = data?.company_id ?? response.companyId ?? null;
+        if (cid) {
+          setPendingPayment({
+            intent,
+            amount: data?.amount_usd ?? (intent === "partnership" ? 100 : 2500),
+            companyId: cid,
+          });
+        }
+      }
     } catch {
       setMessages((prev) => [
         ...prev,
@@ -176,6 +207,26 @@ export default function EmbeddableWidgetPage() {
       ]);
     } finally {
       setIsLoading(false);
+    }
+  };
+
+  const handlePayPending = async () => {
+    if (!pendingPayment) return;
+    setPaymentBusy(true);
+    try {
+      const res = await epcCheckout(pendingPayment.intent, pendingPayment.companyId);
+      setMessages((prev) => [
+        ...prev,
+        { role: "assistant", content: res.message ?? "Pago registrado (placeholder)." },
+      ]);
+      setPendingPayment(null);
+    } catch (e) {
+      setMessages((prev) => [
+        ...prev,
+        { role: "assistant", content: `No pude registrar el pago: ${(e as Error).message}` },
+      ]);
+    } finally {
+      setPaymentBusy(false);
     }
   };
 
@@ -381,7 +432,11 @@ export default function EmbeddableWidgetPage() {
             </svg>
             <div className="widget-header-info">
               <span className="widget-header-title">{config.chatHeaderTitle}</span>
-              <span className="widget-header-status">Online</span>
+              <span className="widget-header-status">
+                {persona === "epc" && "Partner EPC · Andrea"}
+                {persona === "investor" && "Inversor · Marco"}
+                {persona === "customer" && "Online"}
+              </span>
             </div>
             <button className="widget-header-close" onClick={() => setIsOpen(false)}>
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
@@ -451,6 +506,47 @@ export default function EmbeddableWidgetPage() {
                     {msg.content}
                   </div>
                 ))}
+                {pendingPayment && pendingPayment.intent === "partnership" && (
+                  <div className="widget-msg widget-msg-bot" style={{ background: "#f8fafc", border: `1px solid ${primary}`, padding: 12 }}>
+                    <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6, color: "#475569" }}>
+                      Membresía de Partners EPC
+                    </div>
+                    <button
+                      type="button"
+                      onClick={handlePayPending}
+                      disabled={paymentBusy}
+                      style={{
+                        width: "100%",
+                        padding: "10px 14px",
+                        background: primary,
+                        color: "#fff",
+                        border: "none",
+                        borderRadius: 8,
+                        fontWeight: 700,
+                        cursor: paymentBusy ? "wait" : "pointer",
+                      }}
+                    >
+                      {paymentBusy ? "Procesando…" : `Pagar $${pendingPayment.amount} USD (placeholder)`}
+                    </button>
+                    <div style={{ fontSize: 11, color: "#94a3b8", marginTop: 6 }}>
+                      Stripe Checkout pendiente — por ahora marca tu intención y notifica a ventas.
+                    </div>
+                  </div>
+                )}
+                {pendingPayment && pendingPayment.intent === "credit" && (
+                  <KybForm
+                    companyId={pendingPayment.companyId}
+                    amount={pendingPayment.amount}
+                    primary={primary}
+                    onSubmitted={(msg) => {
+                      setMessages((prev) => [...prev, { role: "assistant", content: msg }]);
+                      setPendingPayment(null);
+                    }}
+                    onError={(err) => {
+                      setMessages((prev) => [...prev, { role: "assistant", content: err }]);
+                    }}
+                  />
+                )}
                 {isLoading && (
                   <div className="widget-typing">
                     <div className="widget-typing-dot" />
@@ -501,5 +597,136 @@ export default function EmbeddableWidgetPage() {
         </div>
       )}
     </>
+  );
+}
+
+// ── KYB form: collects extra company info + 3 PDF docs, uploads each, then
+// calls the placeholder checkout. Inline-styled to match the embeddable widget.
+
+type KybLabel = "Constitución" | "Estado financiero" | "Licencia eléctrica";
+const KYB_LABELS: KybLabel[] = ["Constitución", "Estado financiero", "Licencia eléctrica"];
+
+function KybForm(props: {
+  companyId: string;
+  amount: number;
+  primary: string;
+  onSubmitted: (msg: string) => void;
+  onError: (err: string) => void;
+}) {
+  const [annualRevenue, setAnnualRevenue] = useState("");
+  const [taxId, setTaxId] = useState("");
+  const [files, setFiles] = useState<Record<KybLabel, File | null>>({
+    "Constitución": null,
+    "Estado financiero": null,
+    "Licencia eléctrica": null,
+  });
+  const [busy, setBusy] = useState(false);
+  const [progress, setProgress] = useState<string>("");
+
+  const allFilesPresent = KYB_LABELS.every((l) => files[l] !== null);
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!allFilesPresent) {
+      props.onError("Faltan documentos — sube los 3 PDFs antes de enviar.");
+      return;
+    }
+    setBusy(true);
+    try {
+      for (const label of KYB_LABELS) {
+        const f = files[label];
+        if (!f) continue;
+        setProgress(`Subiendo ${label}…`);
+        await epcUploadKybDoc(props.companyId, f, label);
+      }
+      setProgress("Registrando pago…");
+      const res = await epcCheckout("credit", props.companyId);
+      props.onSubmitted(res.message ?? "Aplicación a crédito enviada.");
+    } catch (err) {
+      props.onError(`Error: ${(err as Error).message}`);
+    } finally {
+      setBusy(false);
+      setProgress("");
+    }
+  };
+
+  const labelStyle: React.CSSProperties = { fontSize: 11, fontWeight: 600, color: "#475569", marginBottom: 4 };
+  const inputStyle: React.CSSProperties = {
+    width: "100%",
+    padding: "8px 10px",
+    borderRadius: 6,
+    border: "1px solid #cbd5e1",
+    fontSize: 13,
+    boxSizing: "border-box",
+  };
+
+  return (
+    <form
+      className="widget-msg widget-msg-bot"
+      onSubmit={submit}
+      style={{ background: "#f8fafc", border: `1px solid ${props.primary}`, padding: 12 }}
+    >
+      <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 8, color: "#0f172a" }}>
+        Aplicación a crédito constructivo · ${props.amount} USD
+      </div>
+      <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+        <div style={{ flex: 1 }}>
+          <div style={labelStyle}>Facturación anual (USD)</div>
+          <input
+            type="number"
+            value={annualRevenue}
+            onChange={(e) => setAnnualRevenue(e.target.value)}
+            style={inputStyle}
+            placeholder="500000"
+            min="0"
+          />
+        </div>
+        <div style={{ flex: 1 }}>
+          <div style={labelStyle}>Tax ID / RFC / NIF</div>
+          <input
+            type="text"
+            value={taxId}
+            onChange={(e) => setTaxId(e.target.value)}
+            style={inputStyle}
+            placeholder="opcional"
+          />
+        </div>
+      </div>
+      {KYB_LABELS.map((label) => (
+        <div key={label} style={{ marginBottom: 8 }}>
+          <div style={labelStyle}>{label} (PDF · max 15MB)</div>
+          <input
+            type="file"
+            accept=".pdf,.jpg,.jpeg,.png,.webp"
+            onChange={(e) => setFiles({ ...files, [label]: e.target.files?.[0] ?? null })}
+            style={{ fontSize: 12, width: "100%" }}
+          />
+          {files[label] && (
+            <div style={{ fontSize: 11, color: "#16a34a", marginTop: 2 }}>
+              ✓ {files[label]!.name}
+            </div>
+          )}
+        </div>
+      ))}
+      <button
+        type="submit"
+        disabled={busy || !allFilesPresent}
+        style={{
+          width: "100%",
+          padding: "10px 14px",
+          background: allFilesPresent && !busy ? props.primary : "#94a3b8",
+          color: "#fff",
+          border: "none",
+          borderRadius: 8,
+          fontWeight: 700,
+          cursor: busy ? "wait" : allFilesPresent ? "pointer" : "not-allowed",
+        }}
+      >
+        {busy ? progress || "Procesando…" : `Enviar y pagar $${props.amount} USD`}
+      </button>
+      <div style={{ fontSize: 11, color: "#94a3b8", marginTop: 6 }}>
+        Tarifa única no reembolsable. Revisión manual de Ancestro, decisión en 5-10 días hábiles.
+      </div>
+    </form>
   );
 }

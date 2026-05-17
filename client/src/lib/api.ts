@@ -122,11 +122,15 @@ export interface ChatSource {
   question?: string;
 }
 
+export type Persona = "customer" | "epc" | "investor";
+
 export interface ChatResponse {
   reply: string;
   session_id: string;
   user_id: string;
   session_status: "anon" | "auth";
+  persona?: Persona;
+  company_id?: string;
   registered?: boolean;
   tool_events: Array<{
     name: string;
@@ -204,6 +208,79 @@ export async function sendChatStream(
     registered: res.headers.get("X-Registered") === "true",
     toolEvents,
   };
+}
+
+// =====================================================================
+// EPC checkout (placeholder — Stripe integration pending)
+// =====================================================================
+
+export async function epcCheckout(
+  intent: "partnership" | "credit",
+  companyId: string,
+): Promise<{ ok: boolean; placeholder: boolean; amount_usd: number; message: string }> {
+  return fetchJSON("/api/epc/checkout", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ intent, company_id: companyId }),
+  });
+}
+
+export interface EpcProject {
+  id: string;
+  title: string;
+  country: string;
+  region?: string;
+  capacityKwp?: number;
+  customerType?: string;
+  budgetUsd?: number;
+  deadline?: string;
+  description?: string;
+  status: "open" | "assigned" | "closed";
+  applicantsCount: number;
+  createdAt: number;
+}
+
+export interface EpcCompany {
+  id: string;
+  name: string;
+  country: string;
+  status: string;
+  contactEmail: string;
+}
+
+export async function epcListProjects(): Promise<{
+  company: EpcCompany;
+  available: EpcProject[];
+  applied: EpcProject[];
+}> {
+  return fetchJSON("/api/epc/projects");
+}
+
+export async function epcApplyToProject(projectId: string): Promise<{ ok: boolean; alreadyApplied: boolean; project: EpcProject }> {
+  return fetchJSON(`/api/epc/projects/${encodeURIComponent(projectId)}/apply`, {
+    method: "POST",
+  });
+}
+
+export async function epcUploadKybDoc(
+  companyId: string,
+  file: File,
+  label: string,
+): Promise<{ company: unknown }> {
+  const form = new FormData();
+  form.append("company_id", companyId);
+  form.append("file", file);
+  form.append("label", label);
+  const res = await fetch(url("/api/epc/credit/upload"), {
+    method: "POST",
+    credentials: "include",
+    body: form,
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`upload ${res.status}: ${text}`);
+  }
+  return res.json();
 }
 
 // =====================================================================
