@@ -362,16 +362,19 @@ interface DocsSourcesResponse {
 
 export async function getDocuments(): Promise<UploadedDocument[]> {
   const res = await fetchJSON<DocsSourcesResponse>("/api/docs/sources");
+  // We don't have per-doc upload metadata yet — backfill reasonable defaults
+  // so the UI doesn't render "Invalid Date" / "0 B".
+  const now = new Date().toISOString();
   return res.sources.map((s) => ({
     id: s.source,
     fileName: s.source,
-    fileType: s.kind,
+    fileType: s.kind.toUpperCase(),
     fileSize: 0,
     chunkCount: s.chunks,
     sourceIdentifier: s.source,
     status: "ready" as const,
     errorMessage: null,
-    uploadedAt: "",
+    uploadedAt: now,
   }));
 }
 
@@ -668,17 +671,25 @@ export interface EmailDraftResponse {
   updatedAt: string | null;
 }
 export async function getEmailDraft(): Promise<EmailDraftResponse> {
-  return { html: null, design: null, updatedAt: null };
+  return fetchJSON<EmailDraftResponse>("/api/email-editor");
 }
 export async function saveEmailDraft(
-  _h: string,
-  _d: Record<string, unknown> | null,
+  html: string,
+  design: Record<string, unknown> | null,
 ) {
-  throw new Error(NOT_IMPLEMENTED);
+  return fetchJSON<{ ok: true; updatedAt: string }>("/api/email-editor", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ html, design }),
+  });
 }
 export async function deleteEmailDraft() {
-  return { ok: true };
+  return fetchJSON<{ ok: true }>("/api/email-editor", { method: "DELETE" });
 }
-export async function getComposerPreview(_lang: EmailPreviewLang): Promise<string> {
-  return "<html><body><p>Email composer not yet implemented.</p></body></html>";
+export async function getComposerPreview(lang: EmailPreviewLang): Promise<string> {
+  const res = await fetch(url(`/api/email-editor/preview?lang=${lang}`), {
+    credentials: "include",
+  });
+  if (!res.ok) throw new Error(`preview ${res.status}`);
+  return res.text();
 }
