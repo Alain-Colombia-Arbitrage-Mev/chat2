@@ -16,6 +16,8 @@ export default defineConfig(({ mode }) => {
     },
     root: "./client",
     publicDir: path.resolve(__dirname, "./client/public"),
+    // env files live next to vite.config.ts, not inside client/
+    envDir: __dirname,
     build: {
       outDir: path.resolve(__dirname, "./dist"),
       emptyOutDir: true,
